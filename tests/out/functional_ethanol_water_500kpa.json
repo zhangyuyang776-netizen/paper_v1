@@ -1,0 +1,102 @@
+{
+  "scenario": "ethanol_water_500kpa",
+  "case_name": "ethanol_transport_only_baseline",
+  "pressure": 500000.0,
+  "selected_bank_pressures": [
+    500000.0,
+    500000.0
+  ],
+  "liquid_valid_temperature_range": [
+    280.0,
+    398.42
+  ],
+  "equilibrium": {
+    "Ts": 340.0,
+    "P": 500000.0,
+    "gamma_cond": [
+      0.8210529031746504,
+      0.4745901854214153
+    ],
+    "psat_cond": [
+      314891.37169074797,
+      135509.61456361046
+    ],
+    "latent_cond": [
+      878368.8996689226,
+      2345107.2191117425
+    ],
+    "Xg_eq_full": [
+      0.24670464298778788,
+      0.06725615224012427,
+      0.0,
+      0.6860392047720879
+    ],
+    "Yg_eq_full": [
+      0.35745133597136813,
+      0.038106327901008735,
+      0.0,
+      0.6044423361276231
+    ],
+    "diagnostics": {
+      "activity_model": "UNIFAC",
+      "n_condensables": 2,
+      "liquid_cond_species": [
+        "ethanol",
+        "water"
+      ],
+      "gas_cond_species": [
+        "C2H5OH",
+        "H2O"
+      ],
+      "sum_Xg_full": 1.0,
+      "sum_Yg_cond": 0.3955576638723769,
+      "sum_Yg_full": 1.0,
+      "closure_species_name": "N2",
+      "closure_species_X": 0.6860392047720879,
+      "closure_species_Y": 0.6044423361276231,
+      "Wl_if": 0.03139974859257241,
+      "Wg_eq": 0.03179575806289551,
+      "eq219_integral_cond": [
+        -0.4623803708470092,
+        -1.3055655044307004
+      ]
+    }
+  },
+  "state_pack_roundtrip": {
+    "vector_size": 926,
+    "max_abs_Tl_error": 0.0,
+    "max_abs_Yl_error": 0.0,
+    "max_abs_Tg_error": 0.0,
+    "max_abs_Yg_error": 0.0
+  },
+  "bulk_props": {
+    "diagnostics": {
+      "n_liq_cells": 40,
+      "n_gas_cells": 210,
+      "liquid_species_count": 2,
+      "gas_species_count": 4,
+      "all_finite": true,
+      "min_rho_l": 892.0008583818543,
+      "min_rho_g": 1.630028741553482,
+      "min_cp_l": 2968.1332342272117,
+      "min_cp_g": 1240.7928569167238,
+      "min_gas_pressure": 500000.0,
+      "max_gas_pressure": 500000.0
+    },
+    "D_l_shape": [
+      40,
+      2
+    ],
+    "D_g_shape": [
+      210,
+      4
+    ],
+    "min_D_l": 1.0169071963278964e-09,
+    "min_D_g": 1.50737240059339e-05
+  },
+  "geometry": {
+    "n_liq_cells": 40,
+    "n_gas_cells": 210,
+    "region2_outer_face_index": 120
+  }
+}

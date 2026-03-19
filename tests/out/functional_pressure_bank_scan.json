@@ -1,0 +1,73 @@
+{
+  "scenario": "pressure_bank_scan",
+  "rows": [
+    {
+      "pressure": 101325.0,
+      "selected_bank_pressures": [
+        101320.0
+      ],
+      "liquid_valid_temperature_range": [
+        270.0,
+        350.0
+      ],
+      "liquid_cp_mass": 2449.118409373648,
+      "liquid_density_mass": 783.538545316822,
+      "liquid_conductivity": 0.16313704335783152,
+      "liquid_viscosity": 0.0010444944282957402,
+      "gas_cp_mass": 1150.9442981762145,
+      "gas_density_mass": 0.3505613091434122,
+      "gas_viscosity": 4.271745795174103e-05
+    },
+    {
+      "pressure": 500000.0,
+      "selected_bank_pressures": [
+        500000.0
+      ],
+      "liquid_valid_temperature_range": [
+        270.0,
+        398.42
+      ],
+      "liquid_cp_mass": 2448.734583207705,
+      "liquid_density_mass": 783.895160871468,
+      "liquid_conductivity": 0.1633425236404037,
+      "liquid_viscosity": 0.0010471247216948707,
+      "gas_cp_mass": 1150.9442981762145,
+      "gas_density_mass": 1.7298855620202924,
+      "gas_viscosity": 4.271745795174103e-05
+    },
+    {
+      "pressure": 1000000.0,
+      "selected_bank_pressures": [
+        1000000.0
+      ],
+      "liquid_valid_temperature_range": [
+        270.0,
+        423.84
+      ],
+      "liquid_cp_mass": 2448.3736982581127,
+      "liquid_density_mass": 784.3795925241282,
+      "liquid_conductivity": 0.16360026779766615,
+      "liquid_viscosity": 0.0010505583623864954,
+      "gas_cp_mass": 1150.9442981762145,
+      "gas_density_mass": 3.459771124040585,
+      "gas_viscosity": 4.271745795174103e-05
+    },
+    {
+      "pressure": 2000000.0,
+      "selected_bank_pressures": [
+        2000000.0
+      ],
+      "liquid_valid_temperature_range": [
+        270.0,
+        453.6
+      ],
+      "liquid_cp_mass": 2446.926921572388,
+      "liquid_density_mass": 785.4694159807846,
+      "liquid_conductivity": 0.16409810767128033,
+      "liquid_viscosity": 0.0010573100578361273,
+      "gas_cp_mass": 1150.9442981762145,
+      "gas_density_mass": 6.91954224808117,
+      "gas_viscosity": 4.271745795174103e-05
+    }
+  ]
+}

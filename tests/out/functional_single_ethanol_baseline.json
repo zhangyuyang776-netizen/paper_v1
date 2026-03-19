@@ -1,0 +1,77 @@
+{
+  "scenario": "single_ethanol_baseline",
+  "case_name": "ethanol_transport_only_baseline",
+  "paths": {
+    "liquid_database_path": "D:\\a_yuyangz\\2020XJTU\\STCK\\research\\02droplet simulation\\codex\\paper_v1\\data\\liquid_db.yaml",
+    "gas_mechanism_path": "D:\\a_yuyangz\\2020XJTU\\STCK\\research\\02droplet simulation\\codex\\paper_v1\\mech\\gas.yaml"
+  },
+  "species": {
+    "liquid_species_full": [
+      "ethanol"
+    ],
+    "gas_species_full": [
+      "C2H5OH",
+      "H2O",
+      "O2",
+      "N2"
+    ]
+  },
+  "geometry": {
+    "a": 0.0001,
+    "r_end": 0.01,
+    "n_liq_cells": 40,
+    "n_gas_cells": 210,
+    "interface_face_index": 40
+  },
+  "layout": {
+    "unknowns_profile": "U_A",
+    "total_size": 885,
+    "liq_cell_width": 1,
+    "gas_cell_width": 4
+  },
+  "liquid_backend": {
+    "selected_bank_pressures": [
+      101320.0
+    ],
+    "valid_temperature_range": [
+      270.0,
+      350.0
+    ],
+    "sample_cp_mass": 2434.4895729306786,
+    "sample_density_mass": 785.1309987785315
+  },
+  "gas_backend": {
+    "reference_pressure": 101325.0,
+    "sample_cp_mass": 1150.9442981762145,
+    "sample_density_mass": 0.3505613091434122
+  },
+  "state_pack_roundtrip": {
+    "vector_size": 885,
+    "max_abs_Tl_error": 0.0,
+    "max_abs_Yl_error": 0.0,
+    "max_abs_Tg_error": 0.0,
+    "max_abs_Yg_error": 0.0
+  },
+  "bulk_props": {
+    "diagnostics": {
+      "n_liq_cells": 40,
+      "n_gas_cells": 210,
+      "liquid_species_count": 1,
+      "gas_species_count": 4,
+      "all_finite": true,
+      "min_rho_l": 747.6282603261158,
+      "min_rho_g": 0.3365769163119223,
+      "min_cp_l": 2449.118409373648,
+      "min_cp_g": 1189.1603572387837,
+      "min_gas_pressure": 101325.0,
+      "max_gas_pressure": 101325.0
+    },
+    "D_l_is_none": true,
+    "D_g_shape": [
+      210,
+      4
+    ],
+    "min_mu_l": 0.0005244652908365986,
+    "min_mu_g": 4.2024295610415374e-05
+  }
+}
