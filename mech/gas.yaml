@@ -1,0 +1,81 @@
+generator: YamlWriter
+cantera-version: 3.2.0
+git-commit: 4a8358e
+date: Tue Mar 17 16:25:48 2026
+phases:
+  - name: gas
+    thermo: ideal-gas
+    elements: [C, H, O, N]
+    species: [C2H5OH, H2O, O2, N2]
+    transport: mixture-averaged
+    state:
+      T: 300.0
+      P: 1.01325e+05
+      Y: {N2: 1.0}
+species:
+  - name: C2H5OH
+    composition: {C: 2.0, H: 6.0, O: 1.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [100.0, 999.61, 5000.0]
+      data:
+        - [3.03986349, 0.0166813099, 9.20793189e-06, -1.96015497e-08,
+        7.72415284e-12, -3.08199143e+04, 11.2644533]
+        - [5.73840563, 0.0163722403, -6.06843389e-06, 1.084227e-09, -7.47306101e-14,
+        -3.18834672e+04, -4.37470095]
+    transport:
+      model: gas
+      geometry: nonlinear
+      diameter: 5.509
+      well-depth: 384.521
+  - name: H2O
+    composition: {H: 2.0, O: 1.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [100.0, 1130.24, 5000.0]
+      data:
+        - [4.05763584, -7.87935888e-04, 2.90877503e-06, -1.47518874e-09,
+        2.12842994e-13, -3.02815866e+04, -0.31136407]
+        - [2.84325048, 2.75108542e-03, -7.81031473e-07, 1.07243637e-10,
+        -5.79392222e-15, -2.99586128e+04, 5.91041977]
+    transport:
+      model: gas
+      geometry: nonlinear
+      diameter: 2.605
+      well-depth: 572.402
+      dipole: 1.844
+      rotational-relaxation: 4.0
+  - name: O2
+    composition: {O: 2.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [100.0, 1074.56, 5000.0]
+      data:
+        - [3.5373218, -1.21570926e-03, 5.31617811e-06, -4.89443405e-09,
+        1.45845035e-12, -1038.58846, 4.68368407]
+        - [3.15382427, 1.67803798e-03, -7.69971002e-07, 1.5127471e-10,
+        -1.08781797e-14, -1040.81879, 6.16753872]
+    transport:
+      model: gas
+      geometry: linear
+      diameter: 3.458
+      well-depth: 107.4
+      polarizability: 1.6
+      rotational-relaxation: 3.8
+  - name: N2
+    composition: {N: 2.0}
+    thermo:
+      model: NASA7
+      temperature-ranges: [200.0, 1000.0, 6000.0]
+      data:
+        - [3.53101, -1.23661e-04, -5.02999e-07, 2.43531e-09, -1.40881e-12, -1046.98,
+        2.96747]
+        - [2.95258, 1.3969e-03, -4.92632e-07, 7.8601e-11, -4.60755e-15, -923.949,
+        5.87189]
+    transport:
+      model: gas
+      geometry: linear
+      diameter: 3.621
+      well-depth: 97.53
+      polarizability: 1.76
+      rotational-relaxation: 4.0

@@ -1,0 +1,437 @@
+meta:
+  file_type: liquid_properties_db
+  version: 1
+  units:
+    molecular_weight: kg/mol
+    boiling_temperature: K
+    molar_volume: cm^3/mol
+    association_factor: "-"
+    T_ref: K
+    cp_T_range: K
+    cp_coeffs: "Shomate-compatible coefficients"
+    hvap_ref: J/kg
+    Tc: K
+    rho_coeffs: "merino_log_poly coefficients"
+    k_coeffs: "merino_log_poly coefficients"
+    mu_coeffs: "merino_log_poly coefficients"
+  reference:
+    T_ref: 298.15
+
+global_models:
+  liquid_cp_default_model: shomate
+  liquid_density_default_model: merino_log_poly
+  liquid_conductivity_default_model: merino_log_poly
+  liquid_viscosity_default_model: merino_log_poly
+
+  # 这一组要和你当前补齐后的 liquid.py / mix_rules.py 一致
+  liquid_diffusion_model: wilke_chang
+  liquid_mixture_density_model: merino_x_sqrt_rho
+  liquid_mixture_conductivity_model: filippov
+  liquid_mixture_viscosity_model: grunberg_nissan
+
+  # 可选: ideal / UNIFAC
+  activity_model_default: ideal
+
+# 若 activity_model_default 或某个 species.activity_model 使用 UNIFAC，
+# 顶层必须提供 unifac 数据
+unifac:
+  enabled: true
+  groups:
+    CH3:
+      R: 0.9011
+      Q: 0.848
+    CH2:
+      R: 0.6744
+      Q: 0.54
+    OH:
+      R: 1.0
+      Q: 1.2
+    H2O:
+      R: 0.92
+      Q: 1.4
+  interactions:
+    CH3:
+      CH3: 0.0
+      CH2: 0.0
+      OH: 300.0
+      H2O: 500.0
+    CH2:
+      CH3: 0.0
+      CH2: 0.0
+      OH: 250.0
+      H2O: 450.0
+    OH:
+      CH3: -200.0
+      CH2: -150.0
+      OH: 0.0
+      H2O: -50.0
+    H2O:
+      CH3: -300.0
+      CH2: -250.0
+      OH: 100.0
+      H2O: 0.0
+
+species:
+  - name: ethanol
+    aliases: [NC2H5OH, EtOH]
+
+    molecular_weight: 4.6069e-2
+    boiling_temperature_atm: 351.44
+    molar_volume: 58.4
+    association_factor: 1.5                 #2.6液相扩散系数 Theoretical and Numerical Analysis of Isolated  Ethanol Droplets: Evaporation and Combustion 
+
+    activity_model: UNIFAC
+    unifac_groups:
+      CH3: 1
+      CH2: 1
+      OH: 1
+
+    pressure_banks:
+      - p_fit: 101320
+        boiling_temperature: 351.57
+        T_ref: 298.15
+        cp_model: shomate
+        cp_T_range: [270, 350]
+        cp_coeffs:
+          A: 350.7536376805186
+          B: -2098.730104112286
+          C: 5855.748433169371
+          D: -4333.538902619335
+          E: -1.6486181153927646
+          F: 0
+          G: 0
+          H: 0
+        hvap_ref: 921750
+        hvap_model: null
+        hvap_coeffs: {}
+        rho_model: merino_log_poly
+        rho_coeffs:
+          A: -8.766553106905782
+          B: -784.0545163213359
+          C: -20.48771468185938
+          D: 51.5709197935832
+          E: 0.03198560649679294
+          F: -0.000020961409063602332
+        k_model: merino_log_poly
+        k_coeffs:
+          A: -12.176337895709514
+          B: -1025.5499351035266
+          C: -26.79297951748781
+          D: 60.303205072550064
+          E: 0.043689771571474356
+          F: -0.000026148011556870188
+        mu_model: merino_log_poly
+        mu_coeffs:
+          A: -54.041016944293325
+          B: -4280.140232825866
+          C: -111.83713124519332
+          D: 273.65125202827704
+          E: 0.16649700746652663
+          F: -0.000088422160843038
+
+      - p_fit: 500000
+        boiling_temperature: 398.42
+        T_ref: 298.15
+        cp_model: shomate
+        cp_T_range: [270, 398.42]
+        cp_coeffs:
+          A: -561.3114204830497
+          B: 3779.945777059716
+          C: -8304.529416758916
+          D: 7750.382657264322
+          E: 7.045718097698682
+          F: 0
+          G: 0
+          H: 0
+        hvap_ref: 921750
+        hvap_model: null
+        hvap_coeffs: {}
+        rho_model: merino_log_poly
+        rho_coeffs:
+          A: -19.83787644070965
+          B: -1936.933559654057
+          C: -47.58193832852432
+          D: 109.6552686419995
+          E: 0.06727984012582766
+          F: -0.000039633772530578426
+        k_model: merino_log_poly
+        k_coeffs:
+          A: -7.316042456177294
+          B: -521.5657511785222
+          C: -12.816246134011065
+          D: 34.827430312082136
+          E: 0.028117169582767554
+          F: -0.000017851971620075346
+        mu_model: merino_log_poly
+        mu_coeffs:
+          A: -85.97734268862128
+          B: -7595.843847014578
+          C: -186.60460357893595
+          D: 441.1059887098822
+          E: 0.26861380468061924
+          F: -0.0001426024891770794
+
+      - p_fit: 1000000
+        boiling_temperature: 423.84
+        T_ref: 298.15
+        cp_model: shomate
+        cp_T_range: [270, 423.84]
+        cp_coeffs:
+          A: 11.24285891681982
+          B: 262.61479447106717
+          C: -243.61710232432333
+          D: 1212.273052554234
+          E: 1.0764897693424018
+          F: 0
+          G: 0
+          H: 0
+        hvap_ref: 921750
+        hvap_model: null
+        hvap_coeffs: {}
+        rho_model: merino_log_poly
+        rho_coeffs:
+          A: -29.248820028323447
+          B: -2958.133156479325
+          C: -70.5522144888015
+          D: 159.4304757749834
+          E: 0.09598164928079456
+          F: -0.000054110473683977034
+        k_model: merino_log_poly
+        k_coeffs:
+          A: -6.075683232170019
+          B: -389.9542081090533
+          C: -9.30522293007991
+          D: 28.297555382613478
+          E: 0.024237539156669374
+          F: -0.00001583133393978642
+        mu_model: merino_log_poly
+        mu_coeffs:
+          A: -99.97512557124413
+          B: -9120.694232020294
+          C: -217.54642309283352
+          D: 515.2004672346347
+          E: 0.3111112862037082
+          F: -0.00016390206837968435
+
+      - p_fit: 2000000
+        boiling_temperature: 453.6
+        T_ref: 298.15
+        cp_model: shomate
+        cp_T_range: [270, 453.6]
+        cp_coeffs:
+          A: 279.17136276665707
+          B: -1412.694607022695
+          C: 3672.591877431522
+          D: -2038.872061879866
+          E: -1.6307304847209707
+          F: 0
+          G: 0
+          H: 0
+        hvap_ref: 921750
+        hvap_model: null
+        hvap_coeffs: {}
+        rho_model: merino_log_poly
+        rho_coeffs:
+          A: -43.59342917242029
+          B: -4570.362684892024
+          C: -105.53879022437988
+          D: 235.82588352643378
+          E: 0.13808823163587292
+          F: -0.0000744768803997431
+        k_model: merino_log_poly
+        k_coeffs:
+          A: 2.71440109307704
+          B: 584.3763907311278
+          C: 13.48730856348912
+          D: -18.37922752993843
+          E: -0.002006754744803052
+          F: -0.000002849571160368214
+        mu_model: merino_log_poly
+        mu_coeffs:
+          A: -98.74609186972468
+          B: -9025.446924236507
+          C: -208.44196543123724
+          D: 509.0767116299698
+          E: 0.3061326529969506
+          F: -0.00016061297174019273
+          
+  - name: water
+    aliases: [H2O]
+
+    molecular_weight: 0.018015
+    boiling_temperature_atm: 373.12
+    molar_volume: 18.069045
+    association_factor: 2.6                 #2.6液相扩散系数 Theoretical and Numerical Analysis of Isolated  Ethanol Droplets: Evaporation and Combustion 
+
+    activity_model: UNIFAC
+    unifac_groups:
+      H2O: 1
+
+    pressure_banks:
+      - p_fit: 101320
+        boiling_temperature: 373.12
+        T_ref: 298.15
+        cp_model: shomate
+        cp_T_range: [280, 373.12]
+        cp_coeffs:
+          A: -734.9232896869005
+          B: 4811.829800054011
+          C: -10769.722545886087
+          D: 8629.505635834066
+          E: 9.26683511439569
+          F: 0
+          G: 0
+          H: 0
+        hvap_ref: 2441700
+        hvap_model: null
+        hvap_coeffs: {}
+        rho_model: merino_log_poly
+        rho_coeffs:
+          A: -9.545215975027133
+          B: -1160.985426903546
+          C: -28.8726016223109
+          D: 58.30153971676398
+          E: 0.027470890983452012
+          F: -0.000014715466477355221
+        k_model: merino_log_poly
+        k_coeffs:
+          A: -70.6858853504322
+          B: -8488.95071872088
+          C: -211.08045486076153
+          D: 378.6340594996108
+          E: 0.20507530418699815
+          F: -0.00010195525828748941
+        mu_model: merino_log_poly
+        mu_coeffs:
+          A: 419.72801858393336
+          B: 52050.641259860924
+          C: 1294.2207712991033
+          D: -2271.5573981838406
+          E: -1.177500773070534
+          F: 0.0005576422772719525
+          
+      - p_fit: 500000
+        boiling_temperature: 424.98
+        T_ref: 298.15
+        cp_model: shomate
+        cp_T_range: [280, 424.98]
+        cp_coeffs:
+          A: -300.0305069586149
+          B: 2150.235860139521
+          C: -4684.073724718972
+          D: 3700.3815863849054
+          E: 4.672793143735362
+          F: 0
+          G: 0
+          H: 0
+        hvap_ref: 2441700
+        hvap_model: null
+        hvap_coeffs: {}
+        rho_model: merino_log_poly
+        rho_coeffs:
+          A: -7.631528202098684
+          B: -954.4233887933804
+          C: -22.303947901957102
+          D: 48.19407356637963
+          E: 0.021578964765913256
+          F: -0.000011700512914103456
+        k_model: merino_log_poly
+        k_coeffs:
+          A: -32.46667902352991
+          B: -4344.114684231933
+          C: -101.49210870329388
+          D: 176.57333918205669
+          E: 0.08806143145008427
+          F: -0.000042469665459066164
+        mu_model: merino_log_poly
+        mu_coeffs:
+          A: 218.8623753145226
+          B: 30263.018037806894
+          C: 707.0258332219483
+          D: -1209.545421336503
+          E: -0.5627507903233635
+          F: 0.00024530615337425843
+
+      - p_fit: 1000000
+        boiling_temperature: 453.03
+        T_ref: 298.15
+        cp_model: shomate
+        cp_T_range: [280, 453.03]
+        cp_coeffs:
+          A: -200.3813257855985
+          B: 1569.8579015104187
+          C: -3424.1358591515113
+          D: 2733.597535105554
+          E: 3.516847468707283
+          F: 0
+          G: 0
+          H: 0
+        hvap_ref: 2441700
+        hvap_model: null
+        hvap_coeffs: {}
+        rho_model: merino_log_poly
+        rho_coeffs:
+          A: -7.900628115806132
+          B: -986.5873812898882
+          C: -22.356532043332678
+          D: 49.64448380262301
+          E: 0.02231852761213471
+          F: -0.000012033309758407995
+        k_model: merino_log_poly
+        k_coeffs:
+          A: -19.431800412610233
+          B: -2862.640029135922
+          C: -64.847682643966
+          D: 107.03193711891599
+          E: 0.05007940086794438
+          F: -0.00002414183336441056
+        mu_model: merino_log_poly
+        mu_coeffs:
+          A: 159.34978330510583
+          B: 23503.544702283034
+          C: 532.4356770053313
+          D: -892.0707678056071
+          E: -0.3892888062325852
+          F: 0.0001616177505638916
+     
+      - p_fit: 2000000
+        boiling_temperature: 485.53
+        T_ref: 298.15
+        cp_model: shomate
+        cp_T_range: [280, 485.53]
+        cp_coeffs:
+          A: -173.9344697771602
+          B: 1422.0923475169618
+          C: -3115.245817709073
+          D: 2504.0919265926736
+          E: 3.1776526594078405
+          F: 0
+          G: 0
+          H: 0
+        hvap_ref: 2441700
+        hvap_model: null
+        hvap_coeffs: {}
+        rho_model: merino_log_poly
+        rho_coeffs:
+          A: -9.08497765520368
+          B: -1124.75224560392
+          C: -24.679446668971423
+          D: 55.99820260981475
+          E: 0.02565802283809182
+          F: -0.000013580327049567131
+        k_model: merino_log_poly
+        k_coeffs:
+          A: -17.78470034830844
+          B: -2664.1934112849285
+          C: -58.439513906547774
+          D: 98.15241677402257
+          E: 0.04553361457360694
+          F: -0.000022054231976653682
+        mu_model: merino_log_poly
+        mu_coeffs:
+          A: 113.66758443225021
+          B: 18151.358036702055
+          C: 398.14080342957624
+          D: -646.9164031014
+          E: -0.26044664637887394
+          F: 0.00010159094745176844
