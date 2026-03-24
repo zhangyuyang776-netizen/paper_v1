@@ -8,12 +8,11 @@ It does not construct interface packages, equilibrium closures, fluxes, or
 any residual/Jacobian contributions.
 """
 
-from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
-from core.types import Mesh1D, State
+from core.types import Mesh1D, Props, State
 from properties.gas import GasThermoModel
 from properties.liquid import LiquidThermoModel
 
@@ -89,63 +88,6 @@ def _normalize_liquid_diffusivity(diff_value: np.ndarray | None, *, n_species: i
     return arr
 
 
-@dataclass(frozen=True)
-class BulkProps:
-    rho_l: np.ndarray
-    cp_l: np.ndarray
-    h_l: np.ndarray
-    k_l: np.ndarray
-    mu_l: np.ndarray
-    D_l: np.ndarray | None
-    rho_g: np.ndarray
-    cp_g: np.ndarray
-    h_g: np.ndarray
-    k_g: np.ndarray
-    mu_g: np.ndarray
-    D_g: np.ndarray | None
-    diagnostics: dict[str, Any]
-
-    def __post_init__(self) -> None:
-        rho_l = _require_positive_array("rho_l", _as_1d_float_array("rho_l", self.rho_l))
-        cp_l = _require_positive_array("cp_l", _as_1d_float_array("cp_l", self.cp_l, expected_size=rho_l.shape[0]))
-        h_l = _as_1d_float_array("h_l", self.h_l, expected_size=rho_l.shape[0])
-        k_l = _require_positive_array("k_l", _as_1d_float_array("k_l", self.k_l, expected_size=rho_l.shape[0]))
-        mu_l = _require_positive_array("mu_l", _as_1d_float_array("mu_l", self.mu_l, expected_size=rho_l.shape[0]))
-
-        rho_g = _require_positive_array("rho_g", _as_1d_float_array("rho_g", self.rho_g))
-        cp_g = _require_positive_array("cp_g", _as_1d_float_array("cp_g", self.cp_g, expected_size=rho_g.shape[0]))
-        h_g = _as_1d_float_array("h_g", self.h_g, expected_size=rho_g.shape[0])
-        k_g = _require_positive_array("k_g", _as_1d_float_array("k_g", self.k_g, expected_size=rho_g.shape[0]))
-        mu_g = _require_positive_array("mu_g", _as_1d_float_array("mu_g", self.mu_g, expected_size=rho_g.shape[0]))
-
-        object.__setattr__(self, "rho_l", rho_l)
-        object.__setattr__(self, "cp_l", cp_l)
-        object.__setattr__(self, "h_l", h_l)
-        object.__setattr__(self, "k_l", k_l)
-        object.__setattr__(self, "mu_l", mu_l)
-        object.__setattr__(self, "rho_g", rho_g)
-        object.__setattr__(self, "cp_g", cp_g)
-        object.__setattr__(self, "h_g", h_g)
-        object.__setattr__(self, "k_g", k_g)
-        object.__setattr__(self, "mu_g", mu_g)
-
-        if self.D_l is not None:
-            D_l = _require_positive_array(
-                "D_l",
-                _as_2d_float_array("D_l", self.D_l, expected_rows=rho_l.shape[0]),
-            )
-            object.__setattr__(self, "D_l", D_l)
-        if self.D_g is not None:
-            D_g = _require_positive_array(
-                "D_g",
-                _as_2d_float_array("D_g", self.D_g, expected_rows=rho_g.shape[0]),
-            )
-            object.__setattr__(self, "D_g", D_g)
-
-        if not isinstance(self.diagnostics, dict):
-            raise AggregatorValidationError("diagnostics must be a dictionary")
-
-
 def validate_state_grid_compatibility(state: State, grid: Mesh1D) -> None:
     if grid.n_liq != state.n_liq_cells:
         raise AggregatorValidationError("grid.n_liq must match state.n_liq_cells")
@@ -172,7 +114,7 @@ def build_bulk_props(
     liquid_thermo: LiquidThermoModel,
     gas_thermo: GasThermoModel,
     gas_pressure: float | np.ndarray | None = None,
-) -> BulkProps:
+) -> Props:
     validate_state_grid_compatibility(state, grid)
 
     if state.n_liq_species_full != liquid_thermo.n_species:
@@ -252,7 +194,7 @@ def build_bulk_props(
         "max_gas_pressure": float(np.max(gas_pressure_arr)),
     }
 
-    return BulkProps(
+    return Props(
         rho_l=rho_l,
         cp_l=cp_l,
         h_l=h_l,
@@ -267,6 +209,9 @@ def build_bulk_props(
         D_g=D_g,
         diagnostics=diagnostics,
     )
+
+
+BulkProps = Props
 
 
 __all__ = [
