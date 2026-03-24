@@ -8,7 +8,7 @@ convergence, outer corrector, and step-acceptance modules. It does not rebuild
 an alternative physics / assembly / solver mainline.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import isfinite
 
 import numpy as np
@@ -18,10 +18,17 @@ from core.layout import build_layout
 from core.remap import RemapError, build_old_state_on_current_geometry as remap_old_state_on_current_geometry
 from core.state_pack import unpack_array_to_state
 from core.state_recovery import StateRecoveryError
-from core.types import GeometryState
+from core.types import GeometryState, StateTransferRecord
 from properties.aggregator import AggregatorError, build_bulk_props
 from .nonlinear_context import NonlinearModelHandles, build_nonlinear_context
-from .nonlinear_types import FailureClass, FailureInfo, OuterIterationResult, StepAction, StepAdvanceResult
+from .nonlinear_types import (
+    FailureClass,
+    FailureInfo,
+    InnerEntrySource,
+    OuterIterationResult,
+    StepAction,
+    StepAdvanceResult,
+)
 from .outer_convergence import evaluate_outer_convergence
 from .outer_corrector import compute_outer_corrector
 from .outer_predictor import compute_outer_predictor
@@ -201,6 +208,57 @@ def build_current_geometry_from_radius(
     return geometry_current, mesh_current, metrics_current, layout_current
 
 
+def build_transfer_state_for_next_outer_iter(
+    *,
+    cfg: object,
+    state_converged_k: object,
+    mesh_k: object,
+    geometry_k: object,
+    mesh_k1: object,
+    geometry_k1: object,
+    outer_iter_index: int | None = None,
+    models: object | None = None,
+) -> StateTransferRecord:
+    """Build the outer transfer record for the next outer iteration only."""
+
+    models_h = _as_model_handles(models)
+    hook = _extra(models_h).get("build_transfer_state_for_next_outer_iter")
+    if callable(hook):
+        return hook(
+            cfg=cfg,
+            state_converged_k=state_converged_k,
+            mesh_k=mesh_k,
+            geometry_k=geometry_k,
+            mesh_k1=mesh_k1,
+            geometry_k1=geometry_k1,
+            outer_iter_index=outer_iter_index,
+            models=models_h,
+        )
+
+    liquid_model = models_h.liquid_model
+    gas_model = models_h.gas_model
+    if liquid_model is None or gas_model is None:
+        raise ValueError("timestepper default remap/recovery path requires liquid_model and gas_model")
+    transfer = remap_old_state_on_current_geometry(
+        old_state=state_converged_k,
+        old_mesh=mesh_k,
+        new_mesh=mesh_k1,
+        geometry=geometry_k1,
+        recovery_config=cfg.recovery,
+        species_maps=cfg.species_maps,
+        liquid_thermo=liquid_model,
+        gas_thermo=gas_model,
+    )
+    return StateTransferRecord(
+        contents=transfer.contents,
+        state=transfer.state,
+        geometry=transfer.geometry,
+        mesh=transfer.mesh,
+        source_outer_iter_index=None if outer_iter_index is None else int(outer_iter_index),
+        identity_transfer=bool(getattr(transfer, "identity_transfer", False)),
+    )
+
+
 def build_old_state_on_current_geometry(
     *,
     cfg: object,
@@ -210,36 +268,23 @@ def build_old_state_on_current_geometry(
     mesh_current: object,
     models: object | None = None,
 ) -> tuple[object, object]:
-    """Remap and recover the old accepted state onto the current geometry."""
+    """Compatibility wrapper for the superseded pre-inner remap path.
 
-    models_h = _as_model_handles(models)
-    hook = _extra(models_h).get("build_old_state_on_current_geometry")
-    if callable(hook):
-        return hook(
-            cfg=cfg,
-            accepted_state_old=accepted_state_old,
-            accepted_geometry_old=accepted_geometry_old,
-            geometry_current=geometry_current,
-            mesh_current=mesh_current,
-            models=models_h,
-        )
+    New timestepper mainline must not use this function for the k=0 outer
+    entry. It remains only for legacy callers and dedicated transition tests.
+    """
 
-    liquid_model = models_h.liquid_model
-    gas_model = models_h.gas_model
-    if liquid_model is None or gas_model is None:
-        raise ValueError("timestepper default remap/recovery path requires liquid_model and gas_model")
     old_mesh, _ = build_grid_and_metrics(cfg, accepted_geometry_old)
-    old_state_current = remap_old_state_on_current_geometry(
-        old_state=accepted_state_old,
-        old_mesh=old_mesh,
-        new_mesh=mesh_current,
-        geometry=geometry_current,
-        recovery_config=cfg.recovery,
-        species_maps=cfg.species_maps,
-        liquid_thermo=liquid_model,
-        gas_thermo=gas_model,
+    transfer = build_transfer_state_for_next_outer_iter(
+        cfg=cfg,
+        state_converged_k=accepted_state_old,
+        mesh_k=old_mesh,
+        geometry_k=accepted_geometry_old,
+        mesh_k1=mesh_current,
+        geometry_k1=geometry_current,
+        models=models,
     )
-    return old_state_current, old_state_current.contents
+    return transfer, transfer.contents
 
 
 def _build_props_current(
@@ -277,49 +322,111 @@ def _build_props_current(
 def build_state_guess_for_outer_iter(
     *,
     outer_iter_index: int,
-    accepted_state_old: object,
-    old_state_on_current_geometry: object,
+    accepted_state_n: object | None = None,
+    transfer_in: StateTransferRecord | None = None,
+    entry_source: InnerEntrySource | str | None = None,
+    previous_inner_result: object | None = None,
+    accepted_state_old: object | None = None,
+    old_state_on_current_geometry: object | None = None,
+    **_: object,
+) -> tuple[object, object | None]:
+    """Select the current inner-entry state only.
+
+    This function does not perform remap or recovery. For k=0 it returns the
+    accepted time-level state. For k>0 it returns ``transfer_in.state``.
+    """
+
+    accepted_state_n_eff = accepted_state_n if accepted_state_n is not None else accepted_state_old
+    transfer_in_eff = transfer_in if transfer_in is not None else old_state_on_current_geometry
+    if entry_source is None:
+        raise ValueError("build_state_guess_for_outer_iter requires explicit entry_source")
+    entry_source_eff = InnerEntrySource(entry_source)
+    if entry_source_eff is InnerEntrySource.ACCEPTED_TIME_LEVEL:
+        if accepted_state_n_eff is None:
+            raise ValueError("accepted_time_level entry requires accepted_state_n")
+        return accepted_state_n_eff, None
+    if transfer_in_eff is None:
+        raise ValueError("transfer_from_previous_outer entry requires transfer_in")
+    previous_vec = None if previous_inner_result is None else getattr(previous_inner_result, "solution_vec", None)
+    if previous_vec is None and previous_inner_result is not None:
+        previous_vec = getattr(previous_inner_result, "state_vec", None)
+    return getattr(transfer_in_eff, "state", transfer_in_eff), previous_vec
+
+
+def _recover_state_from_inner_solution(
+    *,
+    inner_result: object,
     layout: object,
     species_maps: object,
-    geometry_current: object | None = None,
-    models: object | None = None,
-    parallel_handles: dict[str, object] | None = None,
-    previous_inner_result: object | None = None,
-) -> tuple[object, object | None]:
-    """Select the current inner initial guess for one outer iterate."""
+    geometry_current: object | None,
+    accepted_state_n: object,
+    transfer_in: StateTransferRecord | None,
+    props_current: object,
+    models: NonlinearModelHandles,
+    parallel_handles: dict[str, object] | None,
+) -> object:
+    """Recover a State view from one converged inner solution for transfer."""
 
-    _ = accepted_state_old
-    models_h = _as_model_handles(models)
-    if int(outer_iter_index) == 0:
-        return getattr(old_state_on_current_geometry, "state"), None
-    if previous_inner_result is not None and getattr(previous_inner_result, "state_vec", None) is not None:
-        hook = _extra(models_h).get("state_guess_from_previous_inner_result")
-        if callable(hook):
-            state_guess = hook(
-                previous_inner_result=previous_inner_result,
-                old_state_on_current_geometry=old_state_on_current_geometry,
+    solution_vec = getattr(inner_result, "solution_vec", None)
+    if solution_vec is None:
+        solution_vec = getattr(inner_result, "state_vec", None)
+    if solution_vec is None:
+        raise ValueError("inner_result.solution_vec is required for transfer construction")
+
+    extra = _extra(models)
+    state_base = transfer_in if transfer_in is not None else accepted_state_n
+    hook = extra.get("state_init_from_previous_inner_result")
+    if not callable(hook):
+        hook = extra.get("state_guess_from_previous_inner_result")
+    if _parallel_size(parallel_handles) > 1:
+        if not callable(hook):
+            raise ValueError(
+                "transfer recovery from previous inner result requires explicit state_init_from_previous_inner_result hook in multi-rank mode"
+            )
+        try:
+            state_current = hook(
+                previous_inner_result=inner_result,
+                reference_state_current_mesh=state_base,
                 layout=layout,
                 species_maps=species_maps,
                 geometry_current=geometry_current,
                 parallel_handles=parallel_handles,
-                models=models_h,
+                models=models,
             )
-            return state_guess, getattr(previous_inner_result, "state_vec")
-        if _parallel_size(parallel_handles) > 1:
-            raise ValueError(
-                "k>0 timestepper state guess requires an explicit state_guess_from_previous_inner_result hook in multi-rank mode"
+        except TypeError:
+            state_current = hook(
+                previous_inner_result=inner_result,
+                old_state_on_current_geometry=state_base,
+                layout=layout,
+                species_maps=species_maps,
+                geometry_current=geometry_current,
+                parallel_handles=parallel_handles,
+                models=models,
             )
-        state_base = getattr(old_state_on_current_geometry, "state", old_state_on_current_geometry)
-        vec_view = np.array(_array_view_from_state_vec(getattr(previous_inner_result, "state_vec")), copy=True)
-        state_guess = unpack_array_to_state(
+    else:
+        vec_view = np.array(_array_view_from_state_vec(solution_vec), copy=True)
+        state_seed = getattr(state_base, "state", state_base)
+        state_current = unpack_array_to_state(
             vec_view,
             layout,
             species_maps,
-            time=getattr(geometry_current, "t", getattr(state_base, "time", None)),
-            state_id=getattr(state_base, "state_id", None),
+            time=getattr(geometry_current, "t", getattr(state_seed, "time", None)),
+            state_id=getattr(state_seed, "state_id", None),
         )
-        return state_guess, getattr(previous_inner_result, "state_vec")
-    return getattr(old_state_on_current_geometry, "state"), None
+
+    rho_l = getattr(props_current, "rho_l", None)
+    rho_g = getattr(props_current, "rho_g", None)
+    hl = getattr(props_current, "h_l", getattr(props_current, "hl", None))
+    hg = getattr(props_current, "h_g", getattr(props_current, "hg", None))
+    if any(value is None for value in (rho_l, rho_g, hl, hg)):
+        return state_current
+    return replace(
+        state_current,
+        rho_l=rho_l,
+        rho_g=rho_g,
+        hl=hl,
+        hg=hg,
+    )
 
 
 def _emit_diag(diag_sink: object | None, *, event: str, payload: object) -> None:
@@ -473,6 +580,8 @@ def run_single_outer_iteration(
     dot_a_iter: float,
     accepted_state_old: object,
     accepted_geometry_old: object,
+    entry_source: InnerEntrySource | str,
+    transfer_in: StateTransferRecord | None = None,
     models: object | None,
     previous_inner_result: object | None = None,
     previous_eps_dot_a: float | None = None,
@@ -481,6 +590,9 @@ def run_single_outer_iteration(
 ) -> OuterIterationResult:
     """Run one complete outer iteration up to convergence check / corrector."""
 
+    accepted_state_n = accepted_state_old
+    accepted_geometry_n = accepted_geometry_old
+    entry_source_eff = InnerEntrySource(entry_source)
     models_h = _as_model_handles(models)
     _emit_diag(
         diag_sink,
@@ -532,27 +644,11 @@ def run_single_outer_iteration(
         _raise_stage_error(exc, substage="build_current_geometry_from_radius")
 
     try:
-        old_state_current_geom, old_mass_current_geom = build_old_state_on_current_geometry(
-            cfg=cfg,
-            accepted_state_old=accepted_state_old,
-            accepted_geometry_old=accepted_geometry_old,
-            geometry_current=geometry_current,
-            mesh_current=mesh_current,
-            models=models_h,
-        )
-    except Exception as exc:
-        _raise_stage_error(exc, substage="build_old_state_on_current_geometry")
-
-    try:
-        state_guess, u_guess_vec = build_state_guess_for_outer_iter(
+        state_init, u_guess_vec = build_state_guess_for_outer_iter(
             outer_iter_index=outer_iter_index,
-            accepted_state_old=accepted_state_old,
-            old_state_on_current_geometry=old_state_current_geom,
-            layout=layout_current,
-            species_maps=cfg.species_maps,
-            geometry_current=geometry_current,
-            models=models_h,
-            parallel_handles=parallel_handles,
+            accepted_state_n=accepted_state_n,
+            transfer_in=transfer_in,
+            entry_source=entry_source_eff,
             previous_inner_result=previous_inner_result,
         )
     except Exception as exc:
@@ -561,7 +657,7 @@ def run_single_outer_iteration(
     try:
         props_current = _build_props_current(
             cfg=cfg,
-            state_guess=state_guess,
+            state_guess=state_init,
             mesh_current=mesh_current,
             models=models_h,
         )
@@ -616,10 +712,12 @@ def run_single_outer_iteration(
             dt=dt,
             a_current=a_iter,
             dot_a_frozen=dot_a_iter,
-            state_guess=state_guess,
-            accepted_state_old=accepted_state_old,
-            old_state_on_current_geometry=getattr(old_state_current_geom, "state", old_state_current_geom),
-            old_mass_on_current_geometry=old_mass_current_geom,
+            state_init=state_init,
+            accepted_state_n=accepted_state_n,
+            entry_source=entry_source_eff,
+            transfer_in=transfer_in,
+            reference_state_current_mesh=None if transfer_in is None else transfer_in.state,
+            reference_contents_current_mesh=None if transfer_in is None else transfer_in.contents,
             props_current=props_current,
             models=models_h,
             step_id=step_id,
@@ -642,6 +740,8 @@ def run_single_outer_iteration(
         inner_result = solve_inner_petsc_snes(ctx)
     except Exception as exc:
         _raise_stage_error(exc, substage="solve_inner_petsc_snes")
+    if getattr(inner_result, "entry_source", None) is None:
+        inner_result.entry_source = entry_source_eff
     _emit_diag(
         diag_sink,
         event="outer_inner_result",
@@ -656,6 +756,8 @@ def run_single_outer_iteration(
             "snes_reason": getattr(inner_result.stats, "snes_reason", None),
             "ksp_reason": getattr(inner_result.stats, "ksp_reason", None),
             "dot_a_phys": getattr(inner_result, "dot_a_phys", None),
+            "entry_source": entry_source_eff.value,
+            "used_transfer": bool(transfer_in is not None),
         },
     )
     if not inner_result.converged:
@@ -664,14 +766,20 @@ def run_single_outer_iteration(
             a_iter=float(a_iter),
             dot_a_iter=float(dot_a_iter),
             inner=inner_result,
+            entry_source=entry_source_eff,
+            used_transfer=transfer_in is not None,
+            transfer_identity=None if transfer_in is None else bool(getattr(transfer_in, "identity_transfer", False)),
             corrector=None,
             convergence=None,
             diagnostics={
                 "geometry_current": geometry_current,
                 "mesh_current": mesh_current,
                 "layout_current": layout_current,
-                "old_state_on_current_geometry": old_state_current_geom,
-                "old_mass_on_current_geometry": old_mass_current_geom,
+                "entry_source": entry_source_eff.value,
+                "transfer_identity": None if transfer_in is None else bool(getattr(transfer_in, "identity_transfer", False)),
+                "state_init": state_init,
+                "transfer_in": transfer_in,
+                "props_current": props_current,
             },
         )
 
@@ -730,14 +838,20 @@ def run_single_outer_iteration(
         a_iter=float(a_iter),
         dot_a_iter=float(dot_a_iter),
         inner=inner_result,
+        entry_source=entry_source_eff,
+        used_transfer=transfer_in is not None,
+        transfer_identity=None if transfer_in is None else bool(getattr(transfer_in, "identity_transfer", False)),
         corrector=corrector,
         convergence=convergence,
         diagnostics={
             "geometry_current": geometry_current,
             "mesh_current": mesh_current,
             "layout_current": layout_current,
-            "old_state_on_current_geometry": old_state_current_geom,
-            "old_mass_on_current_geometry": old_mass_current_geom,
+            "entry_source": entry_source_eff.value,
+            "transfer_identity": None if transfer_in is None else bool(getattr(transfer_in, "identity_transfer", False)),
+            "state_init": state_init,
+            "transfer_in": transfer_in,
+            "props_current": props_current,
         },
     )
 
@@ -748,8 +862,15 @@ def advance_one_step(
     step_id: int,
     t_old: float,
     dt: float,
-    accepted_state_old: object,
-    accepted_geometry_old: object,
+    accepted_state: object | None = None,
+    accepted_state_n: object | None = None,
+    accepted_geometry: object | None = None,
+    accepted_geometry_n: object | None = None,
+    accepted_mesh: object | None = None,
+    accepted_layout: object | None = None,
+    accepted_props: object | None = None,
+    accepted_state_old: object | None = None,
+    accepted_geometry_old: object | None = None,
     dot_a_old: float,
     models: object | None = None,
     parallel_handles: dict[str, object] | None = None,
@@ -760,6 +881,43 @@ def advance_one_step(
     cfg_ts = build_timestepper_config_view(cfg)
     t_old_f = float(t_old)
     dt_f = _validate_positive_finite("dt", float(dt))
+    if accepted_state is not None and accepted_state_old is not None:
+        raise ValueError("Provide either accepted_state or accepted_state_old, not both")
+    if accepted_state_n is not None and accepted_state_old is not None:
+        raise ValueError("Provide either accepted_state_n or accepted_state_old, not both")
+    if accepted_state is not None and accepted_state_n is not None and accepted_state is not accepted_state_n:
+        raise ValueError("accepted_state and accepted_state_n must refer to the same object when both are provided")
+    if accepted_geometry is not None and accepted_geometry_old is not None:
+        raise ValueError("Provide either accepted_geometry or accepted_geometry_old, not both")
+    if accepted_geometry_n is not None and accepted_geometry_old is not None:
+        raise ValueError("Provide either accepted_geometry_n or accepted_geometry_old, not both")
+    if (
+        accepted_geometry is not None
+        and accepted_geometry_n is not None
+        and accepted_geometry is not accepted_geometry_n
+    ):
+        raise ValueError(
+            "accepted_geometry and accepted_geometry_n must refer to the same object when both are provided"
+        )
+    accepted_state_old = (
+        accepted_state
+        if accepted_state is not None
+        else accepted_state_n
+        if accepted_state_n is not None
+        else accepted_state_old
+    )
+    accepted_geometry_old = (
+        accepted_geometry
+        if accepted_geometry is not None
+        else accepted_geometry_n
+        if accepted_geometry_n is not None
+        else accepted_geometry_old
+    )
+    if accepted_state_old is None:
+        raise ValueError("accepted_state or accepted_state_n must be provided")
+    if accepted_geometry_old is None:
+        raise ValueError("accepted_geometry or accepted_geometry_n must be provided")
+    _ = (accepted_mesh, accepted_layout, accepted_props)
     if not isfinite(float(dot_a_old)):
         raise ValueError("dot_a_old must be finite")
     if getattr(accepted_geometry_old, "a", None) is None or float(getattr(accepted_geometry_old, "a")) <= 0.0:
@@ -767,13 +925,16 @@ def advance_one_step(
 
     dt_attempt = dt_f
     retries_used = 0
+    models_h = _as_model_handles(models)
 
     while True:
+        accepted_state_n = accepted_state_old
+        accepted_geometry_n = accepted_geometry_old
         predictor = compute_outer_predictor(
             cfg=cfg,
             t_old=t_old_f,
             dt=dt_attempt,
-            a_old=float(getattr(accepted_geometry_old, "a")),
+            a_old=float(getattr(accepted_geometry_n, "a")),
             dot_a_old=float(dot_a_old),
             step_id=step_id,
         )
@@ -784,7 +945,7 @@ def advance_one_step(
                 step_id=step_id,
                 t_old=t_old_f,
                 dt_attempt=dt_attempt,
-                a_old=float(getattr(accepted_geometry_old, "a")),
+                a_old=float(getattr(accepted_geometry_n, "a")),
                 dot_a_old=float(dot_a_old),
                 predictor=predictor,
             ),
@@ -798,6 +959,8 @@ def advance_one_step(
         dot_a_iter = float(predictor.dot_a_pred)
         previous_inner_result: object | None = None
         previous_eps_dot_a: float | None = None
+        entry_source = InnerEntrySource.ACCEPTED_TIME_LEVEL
+        transfer_in: StateTransferRecord | None = None
 
         for outer_iter_index in range(cfg_ts.outer_max_iter):
             try:
@@ -807,13 +970,15 @@ def advance_one_step(
                     outer_iter_index=outer_iter_index,
                     t_old=t_old_f,
                     dt=dt_attempt,
-                    a_old=float(getattr(accepted_geometry_old, "a")),
+                    a_old=float(getattr(accepted_geometry_n, "a")),
                     dot_a_old=float(dot_a_old),
                     a_iter=float(a_iter),
                     dot_a_iter=float(dot_a_iter),
-                    accepted_state_old=accepted_state_old,
-                    accepted_geometry_old=accepted_geometry_old,
-                    models=models,
+                    accepted_state_old=accepted_state_n,
+                    accepted_geometry_old=accepted_geometry_n,
+                    entry_source=entry_source,
+                    transfer_in=transfer_in,
+                    models=models_h,
                     previous_inner_result=previous_inner_result,
                     previous_eps_dot_a=previous_eps_dot_a,
                     parallel_handles=parallel_handles,
@@ -840,14 +1005,93 @@ def advance_one_step(
                 raise ValueError("converged inner iteration must provide outer convergence result")
             previous_eps_dot_a = outer_iter.convergence.eps_dot_a
             if outer_iter.convergence.converged:
-                accepted_state_candidate = outer_iter.inner.state_vec
+                accepted_state_candidate = outer_iter.inner.solution_vec
                 accepted_geometry_candidate = outer_iter.diagnostics.get("geometry_current")
                 break
 
             if outer_iter.corrector is None:
                 raise ValueError("non-converged outer iteration must provide a corrector result")
-            a_iter = float(outer_iter.corrector.a_new)
-            dot_a_iter = float(outer_iter.corrector.dot_a_new)
+            geometry_current = outer_iter.diagnostics.get("geometry_current")
+            mesh_current = outer_iter.diagnostics.get("mesh_current")
+            layout_current = outer_iter.diagnostics.get("layout_current")
+            props_current = outer_iter.diagnostics.get("props_current")
+            if geometry_current is None or mesh_current is None or layout_current is None or props_current is None:
+                raise ValueError(
+                    "non-converged outer iteration must retain geometry_current, mesh_current, layout_current, and props_current"
+                )
+            next_a_iter = float(outer_iter.corrector.a_new)
+            next_dot_a_iter = float(outer_iter.corrector.dot_a_new)
+            try:
+                state_converged_k = _recover_state_from_inner_solution(
+                    inner_result=outer_iter.inner,
+                    layout=layout_current,
+                    species_maps=cfg.species_maps,
+                    geometry_current=geometry_current,
+                    accepted_state_n=accepted_state_n,
+                    transfer_in=transfer_in,
+                    props_current=props_current,
+                    models=models_h,
+                    parallel_handles=parallel_handles,
+                )
+            except Exception as exc:
+                fatal_failure = _wrap_outer_stage_exception(
+                    exc,
+                    stage="outer_iteration",
+                    substage="recover_state_from_inner_solution",
+                    extra_meta={
+                        "step_id": int(step_id),
+                        "outer_iter_index": int(outer_iter_index),
+                    },
+                )
+                break
+            try:
+                geometry_k1, mesh_k1, _, _ = build_current_geometry_from_radius(
+                    cfg=cfg,
+                    step_id=step_id,
+                    t_old=t_old_f,
+                    dt=dt_attempt,
+                    a_iter=next_a_iter,
+                    dot_a_iter=next_dot_a_iter,
+                    outer_iter_index=outer_iter_index + 1,
+                    accepted_geometry_old=accepted_geometry_n,
+                    models=models_h,
+                )
+            except Exception as exc:
+                fatal_failure = _wrap_outer_stage_exception(
+                    exc,
+                    stage="outer_iteration",
+                    substage="build_current_geometry_from_radius[next]",
+                    extra_meta={
+                        "step_id": int(step_id),
+                        "outer_iter_index": int(outer_iter_index),
+                    },
+                )
+                break
+            try:
+                transfer_in = build_transfer_state_for_next_outer_iter(
+                    cfg=cfg,
+                    state_converged_k=state_converged_k,
+                    mesh_k=mesh_current,
+                    geometry_k=geometry_current,
+                    mesh_k1=mesh_k1,
+                    geometry_k1=geometry_k1,
+                    outer_iter_index=outer_iter_index,
+                    models=models_h,
+                )
+            except Exception as exc:
+                fatal_failure = _wrap_outer_stage_exception(
+                    exc,
+                    stage="outer_iteration",
+                    substage="build_transfer_state_for_next_outer_iter",
+                    extra_meta={
+                        "step_id": int(step_id),
+                        "outer_iter_index": int(outer_iter_index),
+                    },
+                )
+                break
+            a_iter = next_a_iter
+            dot_a_iter = next_dot_a_iter
+            entry_source = InnerEntrySource.TRANSFER_FROM_PREVIOUS_OUTER
 
         last_outer_iter = outer_iterations[-1] if outer_iterations else None
         if fatal_failure is not None:
@@ -927,7 +1171,7 @@ def advance_one_step(
             acceptance=decision,
             predictor=predictor,
             outer_iterations=outer_iterations,
-            accepted_state_vec=accepted_state_candidate if decision.accepted else None,
+            accepted_solution_vec=accepted_state_candidate if decision.accepted else None,
             accepted_geometry=accepted_geometry_candidate if decision.accepted else None,
             failure=FailureInfo() if decision.accepted else decision.failure,
             diagnostics={
@@ -935,6 +1179,11 @@ def advance_one_step(
                 "retries_used": retries_used,
                 "outer_iter_count": len(outer_iterations),
                 "inner_converged_any": any(it.inner.converged for it in outer_iterations),
+                "entry_source_first_outer": (
+                    getattr(outer_iterations[0].entry_source, "value", outer_iterations[0].entry_source)
+                    if outer_iterations
+                    else None
+                ),
                 "outer_converged": bool(
                     last_outer_iter is not None
                     and last_outer_iter.convergence is not None
@@ -960,6 +1209,7 @@ __all__ = [
     "advance_one_step",
     "build_current_geometry_from_radius",
     "build_old_state_on_current_geometry",
+    "build_transfer_state_for_next_outer_iter",
     "build_state_guess_for_outer_iter",
     "build_timestepper_config_view",
     "run_single_outer_iteration",

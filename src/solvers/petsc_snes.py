@@ -23,6 +23,7 @@ from assembly.jacobian_pattern import JacobianPattern, build_jacobian_pattern
 from assembly.petsc_prealloc import build_petsc_prealloc
 from assembly.residual_global import GlobalResidualResult, assemble_global_residual_from_trial_view
 from core.state_pack import pack_state_to_array
+from core.types import StateTransferRecord
 from physics.radius_update import build_radius_update_package
 from .linesearch_guards import (
     GuardCheckResult,
@@ -40,6 +41,7 @@ from .nonlinear_types import (
     SolverBackend,
 )
 from .petsc_linear import LinearPCDiagnostics, apply_structured_pc, finalize_ksp_config
+from .nonlinear_types import InnerEntrySource
 
 
 def _get_petsc():
@@ -158,6 +160,49 @@ def _ctx_meta_get(ctx: NonlinearContext, key: str, default=None):
     return meta.get(key, default)
 
 
+def _state_matches_grid(state: object, grid: object) -> bool:
+    n_liq = getattr(state, "n_liq_cells", None)
+    n_gas = getattr(state, "n_gas_cells", None)
+    grid_n_liq = getattr(grid, "n_liq", None)
+    grid_n_gas = getattr(grid, "n_gas", None)
+    return (
+        n_liq is not None
+        and n_gas is not None
+        and grid_n_liq is not None
+        and grid_n_gas is not None
+        and int(n_liq) == int(grid_n_liq)
+        and int(n_gas) == int(grid_n_gas)
+    )
+
+
+def _contents_match_grid(contents: object, grid: object) -> bool:
+    n_liq = getattr(contents, "n_liq_cells", None)
+    n_gas = getattr(contents, "n_gas_cells", None)
+    grid_n_liq = getattr(grid, "n_liq", None)
+    grid_n_gas = getattr(grid, "n_gas", None)
+    return (
+        n_liq is not None
+        and n_gas is not None
+        and grid_n_liq is not None
+        and grid_n_gas is not None
+        and int(n_liq) == int(grid_n_liq)
+        and int(n_gas) == int(grid_n_gas)
+    )
+
+
+def _layout_has_rd_block(layout: object) -> bool:
+    has_block = getattr(layout, "has_block", None)
+    if callable(has_block):
+        try:
+            return bool(has_block("Rd"))
+        except TypeError:
+            return bool(has_block(block_name="Rd"))
+    blocks = getattr(layout, "blocks", None)
+    if isinstance(blocks, dict):
+        return "Rd" in blocks
+    return False
+
+
 def _emit_solver_diag(
     ctx: NonlinearContext,
     event: str,
@@ -175,10 +220,21 @@ def _emit_solver_diag(
 
 
 def _solver_base_payload(ctx: NonlinearContext) -> dict[str, Any]:
-    return {
-        "step_id": _ctx_meta_get(ctx, "step_id", None),
-        "outer_iter_index": _ctx_meta_get(ctx, "outer_iter_index", None),
+    base = {
+        "step_id": getattr(ctx, "step_id", None),
+        "outer_iter_id": getattr(ctx, "outer_iter_id", None),
+        "entry_source": getattr(getattr(ctx, "entry_source", None), "value", getattr(ctx, "entry_source", None)),
+        "used_transfer": bool(getattr(ctx, "transfer_in", None) is not None),
+        "transfer_identity": (
+            None
+            if getattr(ctx, "transfer_in", None) is None
+            else bool(getattr(ctx.transfer_in, "identity_transfer", False))
+        ),
+        "a_current": _safe_float(getattr(ctx, "a_current", None), None),
+        "dot_a_frozen": _safe_float(getattr(ctx, "dot_a_frozen", None), None),
     }
+    base["outer_iter_index"] = base["outer_iter_id"]
+    return base
 
 
 def _safe_int(value: object, default=None):
@@ -324,6 +380,98 @@ def _record_fatal_callback_exception(
     }
 
 
+def _validate_inner_snes_context(ctx: NonlinearContext) -> None:
+    if getattr(ctx, "entry_source", None) is None:
+        raise ValueError("NonlinearContext.entry_source must be provided for PETSc inner solve")
+    if not isinstance(ctx.entry_source, InnerEntrySource):
+        raise ValueError("NonlinearContext.entry_source must be an InnerEntrySource")
+    if getattr(ctx, "state_init", None) is None:
+        raise ValueError("NonlinearContext.state_init must be provided for PETSc inner solve")
+    if getattr(ctx, "accepted_state_n", None) is None:
+        raise ValueError("NonlinearContext.accepted_state_n must be provided for PETSc inner solve")
+    if float(getattr(ctx, "a_current", 0.0)) <= 0.0:
+        raise ValueError("NonlinearContext.a_current must be > 0 for PETSc inner solve")
+    if float(getattr(ctx, "dt", 0.0)) <= 0.0:
+        raise ValueError("NonlinearContext.dt must be > 0 for PETSc inner solve")
+    if int(getattr(ctx, "outer_iter_id", -1)) < 0:
+        raise ValueError("NonlinearContext.outer_iter_id must be >= 0 for PETSc inner solve")
+    if _layout_has_rd_block(ctx.layout):
+        raise ValueError("NonlinearContext.layout must not contain an Rd block")
+    if ctx.entry_source is InnerEntrySource.TRANSFER_FROM_PREVIOUS_OUTER and getattr(ctx, "transfer_in", None) is None:
+        raise ValueError("transfer entry_source requires ctx.transfer_in")
+    if getattr(ctx, "reference_state_current_mesh", None) is not None and not _state_matches_grid(
+        ctx.reference_state_current_mesh, ctx.grid
+    ):
+        raise ValueError("reference_state_current_mesh must match current grid cell counts")
+    if getattr(ctx, "reference_contents_current_mesh", None) is not None and not _contents_match_grid(
+        ctx.reference_contents_current_mesh, ctx.grid
+    ):
+        raise ValueError("reference_contents_current_mesh must match current grid cell counts")
+
+
+def _resolve_reference_transfer_record(ctx: NonlinearContext) -> StateTransferRecord | None:
+    transfer = getattr(ctx, "transfer_in", None)
+    if transfer is not None:
+        return transfer
+    reference_state = getattr(ctx, "reference_state_current_mesh", None)
+    reference_contents = getattr(ctx, "reference_contents_current_mesh", None)
+    if reference_state is None or reference_contents is None:
+        return None
+    return StateTransferRecord(
+        contents=reference_contents,
+        state=reference_state,
+        geometry=ctx.geometry_current,
+        mesh=ctx.grid,
+        source_outer_iter_index=int(ctx.outer_iter_id) if getattr(ctx, "outer_iter_id", None) is not None else None,
+        identity_transfer=False,
+    )
+
+
+def _build_initial_guess_vector(ctx: NonlinearContext, PETSc, u0: np.ndarray | None = None) -> object:
+    if u0 is not None:
+        ctx.meta["initial_guess_source"] = "u0"
+        arr = np.asarray(u0, dtype=np.float64)
+        return _create_vec_from_array(PETSc, arr, comm=ctx.parallel_handles.get("comm"))
+
+    if _comm_size(ctx) > 1:
+        hook = ctx.meta.get("distributed_state_vec_builder")
+        if callable(hook):
+            ctx.meta["initial_guess_source"] = "u_guess_vec" if ctx.u_guess_vec is not None else "state_init"
+            return hook(ctx=ctx, PETSc=PETSc)
+        if ctx.u_guess_vec is None:
+            raise ValueError(
+                "multi-rank PETSc SNES solve requires ctx.u_guess_vec or meta.distributed_state_vec_builder"
+            )
+
+    if ctx.u_guess_vec is not None:
+        ctx.meta["initial_guess_source"] = "u_guess_vec"
+        return ctx.u_guess_vec.copy() if hasattr(ctx.u_guess_vec, "copy") else ctx.u_guess_vec
+
+    species_maps = ctx.meta.get("species_maps")
+    if species_maps is None:
+        raise ValueError("NonlinearContext.meta must provide species_maps when u_guess_vec is absent")
+    ctx.meta["initial_guess_source"] = "state_init"
+    arr = pack_state_to_array(ctx.state_init, ctx.layout, species_maps)
+    return _create_vec_from_array(PETSc, arr, comm=ctx.parallel_handles.get("comm"))
+
+
+def _assert_fixed_geometry_contract(ctx: NonlinearContext, snapshot: dict[str, object] | None = None) -> dict[str, object]:
+    current = {
+        "a_current": float(ctx.a_current),
+        "dot_a_frozen": float(ctx.dot_a_frozen),
+        "geometry_current": ctx.geometry_current,
+    }
+    if snapshot is None:
+        return current
+    if float(snapshot["a_current"]) != float(current["a_current"]):
+        raise ValueError("petsc_snes fixed-geometry contract violated: a_current was modified")
+    if float(snapshot["dot_a_frozen"]) != float(current["dot_a_frozen"]):
+        raise ValueError("petsc_snes fixed-geometry contract violated: dot_a_frozen was modified")
+    if snapshot["geometry_current"] is not current["geometry_current"]:
+        raise ValueError("petsc_snes fixed-geometry contract violated: geometry_current was modified")
+    return current
+
+
 def _array_view_from_vec(vec: object, writable: bool) -> np.ndarray:
     if hasattr(vec, "getArray"):
         return np.asarray(vec.getArray(readonly=not writable))
@@ -354,29 +502,20 @@ def _create_vec_from_array(PETSc, array: np.ndarray, *, comm: object | None = No
 
 
 def build_initial_state_vec(ctx: NonlinearContext, PETSc) -> object:
-    """Build the SNES state vector from ctx.u_guess_vec or ctx.state_guess."""
+    """Compatibility wrapper for the formal initial-guess builder.
 
-    if _comm_size(ctx) > 1:
-        hook = ctx.meta.get("distributed_state_vec_builder")
-        if callable(hook):
-            return hook(ctx=ctx, PETSc=PETSc)
-        if ctx.u_guess_vec is None:
-            raise ValueError(
-                "multi-rank PETSc SNES solve requires ctx.u_guess_vec or meta.distributed_state_vec_builder"
-            )
+    The formal solve path uses ``u0 > u_guess_vec > state_init``. This legacy
+    wrapper retains ``meta['u_trial_layout_guess']`` support for smoke tests
+    and transitional callers that have not yet migrated to the formal entry
+    contract.
+    """
 
-    if ctx.u_guess_vec is not None:
-        return ctx.u_guess_vec.copy() if hasattr(ctx.u_guess_vec, "copy") else ctx.u_guess_vec
-
-    if "u_trial_layout_guess" in ctx.meta:
+    if "u_trial_layout_guess" in ctx.meta and getattr(ctx, "u_guess_vec", None) is None:
+        ctx.meta["initial_guess_source"] = "u_trial_layout_guess"
         arr = np.asarray(ctx.meta["u_trial_layout_guess"], dtype=np.float64)
         return _create_vec_from_array(PETSc, arr, comm=ctx.parallel_handles.get("comm"))
 
-    species_maps = ctx.meta.get("species_maps")
-    if species_maps is None:
-        raise ValueError("NonlinearContext.meta must provide species_maps when u_guess_vec is absent")
-    arr = pack_state_to_array(ctx.state_guess, ctx.layout, species_maps)
-    return _create_vec_from_array(PETSc, arr, comm=ctx.parallel_handles.get("comm"))
+    return _build_initial_guess_vector(ctx, PETSc, u0=None)
 
 
 def build_residual_vec(ctx: NonlinearContext, PETSc) -> object:
@@ -479,11 +618,16 @@ def _resolve_residual_builder(ctx: NonlinearContext) -> Callable[[np.ndarray], o
         "farfield_bc",
     )
     if all(name in ctx.meta for name in required):
+        reference_record = _resolve_reference_transfer_record(ctx)
+        if reference_record is None:
+            raise ValueError(
+                "default residual builder requires ctx.transfer_in or reference_state/reference_contents on current mesh"
+            )
         def _builder(u_layout: np.ndarray) -> GlobalResidualResult:
             return assemble_global_residual_from_trial_view(
                 vec_trial=u_layout,
-                base_state=ctx.state_guess,
-                old_state_current_geom=ctx.old_state_on_current_geometry,
+                base_state=ctx.state_init,
+                old_state_current_geom=reference_record,
                 mesh=ctx.meta["mesh"],
                 layout=ctx.layout,
                 species_maps=ctx.meta["species_maps"],
@@ -764,6 +908,9 @@ def map_snes_failure(
 ) -> FailureInfo:
     """Map SNES/guard/domain failures to the project-level inner failure taxonomy."""
 
+    contract_meta = _solver_base_payload(ctx) | {
+        "initial_guess_source": _ctx_meta_get(ctx, "initial_guess_source", None),
+    }
     fatal_callback = ctx.meta.get("fatal_callback_exception")
     if isinstance(fatal_callback, dict):
         exc_type = str(fatal_callback.get("type", "Exception"))
@@ -774,7 +921,7 @@ def map_snes_failure(
             where=str(fatal_callback.get("where", "petsc_snes.solve")),
             recoverable=False,
             rollback_required=False,
-            meta={"fatal_callback_exception": dict(fatal_callback)},
+            meta={"fatal_callback_exception": dict(fatal_callback), **contract_meta},
         )
 
     last_guard = ctx.meta.get("last_failed_guard_result")
@@ -790,6 +937,7 @@ def map_snes_failure(
                 "guard_reason": last_guard.failure_reason.value,
                 "guard_failure": last_guard.failure.meta,
                 "n_domain_error": int(residual_cache.n_domain_error),
+                **contract_meta,
             },
         )
 
@@ -805,6 +953,7 @@ def map_snes_failure(
                 "n_domain_error": int(residual_cache.n_domain_error),
                 "residual_diag": dict(residual_cache.last_diag),
                 "jacobian_diag": dict(jac_cache.last_diag),
+                **contract_meta,
             },
         )
 
@@ -817,7 +966,7 @@ def map_snes_failure(
             where="petsc_snes.solve",
             recoverable=False,
             rollback_required=False,
-            meta={"snes_reason": reason},
+            meta={"snes_reason": reason, **contract_meta},
         )
     return FailureInfo(
         failure_class=FailureClass.INNER_FAIL,
@@ -826,7 +975,7 @@ def map_snes_failure(
         where="petsc_snes.solve",
         recoverable=True,
         rollback_required=False,
-        meta={"snes_reason": reason},
+        meta={"snes_reason": reason, **contract_meta},
     )
 
 
@@ -851,16 +1000,26 @@ def _compute_dot_a_phys(
     return None
 
 
-def solve_inner_petsc_snes(ctx: NonlinearContext) -> InnerSolveResult:
-    """Run one fixed-geometry PETSc SNES solve and return a structured inner result."""
+def solve_inner_petsc_snes(ctx: NonlinearContext, u0: np.ndarray | None = None) -> InnerSolveResult:
+    """Solve one fixed-geometry inner nonlinear system with PETSc SNES.
 
+    This function consumes an already-prepared ``NonlinearContext`` and owns
+    only the inner fixed-geometry solve. Outer predictor/corrector updates,
+    transfer/remap/recovery, and step acceptance are outside this module.
+    """
+
+    _validate_inner_snes_context(ctx)
     PETSc = ctx.parallel_handles.get("PETSc") if isinstance(ctx.parallel_handles, dict) and ctx.parallel_handles.get("PETSc") is not None else _get_petsc()
     cfg_snes = build_snes_config_view(ctx)
     ctx.meta.pop("fatal_callback_exception", None)
     ctx.meta.pop("last_guard_result", None)
     ctx.meta.pop("last_failed_guard_result", None)
     ctx.meta.pop("any_guard_triggered", None)
-    X = build_initial_state_vec(ctx, PETSc)
+    ctx.meta["entry_source"] = ctx.entry_source.value
+    ctx.meta["used_transfer"] = bool(ctx.transfer_in is not None)
+    ctx.meta["transfer_identity"] = None if ctx.transfer_in is None else bool(ctx.transfer_in.identity_transfer)
+    geometry_snapshot = _assert_fixed_geometry_contract(ctx)
+    X = _build_initial_guess_vector(ctx, PETSc, u0=u0)
     F = build_residual_vec(ctx, PETSc)
     J, P = build_preallocated_jacobian_mats(ctx, PETSc)
 
@@ -947,6 +1106,7 @@ def solve_inner_petsc_snes(ctx: NonlinearContext) -> InnerSolveResult:
             "comm_size": _safe_int(_comm_size(ctx), None),
             "N": int(ctx.layout.total_size),
             "X_local_size": _safe_int(len(_array_view_from_vec(X, writable=False)), None),
+            "initial_guess_source": _ctx_meta_get(ctx, "initial_guess_source", None),
             "jacobian_mode": "assembled",
             "snes_type": getattr(snes, "getType", lambda: cfg_snes.snes_type)(),
             "linesearch_type": getattr(snes.getLineSearch(), "ls_type", cfg_snes.linesearch_type)
@@ -974,6 +1134,7 @@ def solve_inner_petsc_snes(ctx: NonlinearContext) -> InnerSolveResult:
             "n_res_eval": _safe_int(residual_cache.n_res_eval, None),
             "n_jac_eval": _safe_int(jac_cache.n_jac_eval, None),
             "time_inner_wall": _safe_float(perf_counter() - t_start, None),
+            "initial_guess_source": _ctx_meta_get(ctx, "initial_guess_source", None),
             "jacobian_mode": "assembled",
             "parallel_active": bool(_comm_size(ctx) > 1),
             "serial_emulation": bool(_comm_size(ctx) <= 1),
@@ -1004,8 +1165,16 @@ def solve_inner_petsc_snes(ctx: NonlinearContext) -> InnerSolveResult:
         "serial_emulation": bool(_comm_size(ctx) <= 1),
         "inner_monitor_enabled": bool(inner_monitor_enabled),
         "inner_monitor_stride": int(inner_monitor_stride),
-        "step_id": _ctx_meta_get(ctx, "step_id", None),
-        "outer_iter_index": _ctx_meta_get(ctx, "outer_iter_index", None),
+        "step_id": getattr(ctx, "step_id", None),
+        "outer_iter_id": getattr(ctx, "outer_iter_id", None),
+        "entry_source": ctx.entry_source.value,
+        "used_transfer": bool(ctx.transfer_in is not None),
+        "transfer_identity": None if ctx.transfer_in is None else bool(ctx.transfer_in.identity_transfer),
+        "a_current": float(ctx.a_current),
+        "dot_a_frozen": float(ctx.dot_a_frozen),
+        "initial_guess_source": _ctx_meta_get(ctx, "initial_guess_source", None),
+        "history_res_inf_eval": list(residual_cache.history_linf),
+        "history_res_inf_phys": list(residual_cache.history_linf),
     }
 
     _emit_solver_diag(
@@ -1024,6 +1193,7 @@ def solve_inner_petsc_snes(ctx: NonlinearContext) -> InnerSolveResult:
             "n_jac_eval": _safe_int(jac_cache.n_jac_eval, None),
             "n_domain_error": _safe_int(residual_cache.n_domain_error, None),
             "time_total": _safe_float(wall_time, None),
+            "initial_guess_source": _ctx_meta_get(ctx, "initial_guess_source", None),
             "jacobian_mode": "assembled",
             "snes_type": getattr(snes, "getType", lambda: cfg_snes.snes_type)(),
             "linesearch_type": getattr(snes.getLineSearch(), "ls_type", cfg_snes.linesearch_type)
@@ -1034,15 +1204,17 @@ def solve_inner_petsc_snes(ctx: NonlinearContext) -> InnerSolveResult:
         },
         level="INFO" if stats.converged else "WARNING",
     )
+    _assert_fixed_geometry_contract(ctx, geometry_snapshot)
 
     if stats.converged:
         state_vec = X.copy() if hasattr(X, "copy") else X
         dot_a_phys = _compute_dot_a_phys(ctx=ctx, state_vec=state_vec, residual_cache=residual_cache)
         result = InnerSolveResult(
             converged=True,
-            state_vec=state_vec,
+            solution_vec=state_vec,
             dot_a_phys=dot_a_phys,
-            old_state_on_current_geometry=ctx.old_state_on_current_geometry,
+            entry_source=ctx.entry_source,
+            old_state_on_current_geometry=_resolve_reference_transfer_record(ctx),
             stats=stats,
             failure=FailureInfo(),
             diagnostics=diagnostics,
@@ -1058,9 +1230,10 @@ def solve_inner_petsc_snes(ctx: NonlinearContext) -> InnerSolveResult:
     )
     result = InnerSolveResult(
         converged=False,
-        state_vec=None,
+        solution_vec=None,
         dot_a_phys=None,
-        old_state_on_current_geometry=ctx.old_state_on_current_geometry,
+        entry_source=ctx.entry_source,
+        old_state_on_current_geometry=_resolve_reference_transfer_record(ctx),
         stats=stats,
         failure=failure,
         diagnostics=diagnostics,
@@ -1069,13 +1242,22 @@ def solve_inner_petsc_snes(ctx: NonlinearContext) -> InnerSolveResult:
     return result
 
 
+def solve_nonlinear_petsc(ctx: NonlinearContext, u0: np.ndarray | None = None) -> InnerSolveResult:
+    """Compatibility wrapper for the formal fixed-geometry inner PETSc solve."""
+
+    return solve_inner_petsc_snes(ctx, u0=u0)
+
+
 __all__ = [
     "JacobianEvalCache",
     "ResidualEvalCache",
     "SnesConfigView",
+    "_assert_fixed_geometry_contract",
     "_get_petsc",
+    "_build_initial_guess_vector",
     "_normalize_linesearch_type",
     "_normalize_snes_type",
+    "_validate_inner_snes_context",
     "attach_linesearch_guards",
     "build_initial_state_vec",
     "build_preallocated_jacobian_mats",
@@ -1086,4 +1268,5 @@ __all__ = [
     "make_residual_callback",
     "map_snes_failure",
     "solve_inner_petsc_snes",
+    "solve_nonlinear_petsc",
 ]

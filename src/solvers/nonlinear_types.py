@@ -75,6 +75,13 @@ class GuardFailureReason(str, Enum):
     UNKNOWN = "unknown"
 
 
+class InnerEntrySource(str, Enum):
+    """Source of the current inner entry state for one outer iteration."""
+
+    ACCEPTED_TIME_LEVEL = "accepted_time_level"
+    TRANSFER_FROM_PREVIOUS_OUTER = "transfer_from_previous_outer"
+
+
 @dataclass(slots=True, kw_only=True)
 class ResidualNorms:
     """Residual norm bundle shared by inner, outer, and acceptance diagnostics.
@@ -136,30 +143,70 @@ class InnerSolveStats:
     meta: dict[str, object] = field(default_factory=dict)
 
 
-@dataclass(slots=True, kw_only=True)
+@dataclass(slots=True, kw_only=True, init=False)
 class InnerSolveResult:
     """Result of one fixed-geometry inner solve attempt.
 
     Produced by ``petsc_snes.py`` and consumed by outer corrector,
     outer-convergence logic, and step acceptance.
 
-    ``state_vec`` is a backend-native global state handle; in the formal PETSc
-    path it is expected to be a PETSc Vec rather than a numpy array.
+    ``solution_vec`` is the formal backend-native converged state handle.
+    ``state_vec`` is retained as a read-only compatibility alias during the
+    transition away from the superseded contract.
     """
 
     converged: bool = False
-    state_vec: object | None = None
+    solution_vec: object | None = None
     dot_a_phys: float | None = None
-    old_state_on_current_geometry: object | None = None
+    entry_source: InnerEntrySource | None = None
     stats: InnerSolveStats = field(default_factory=InnerSolveStats)
     failure: FailureInfo = field(default_factory=FailureInfo)
     diagnostics: dict[str, object] = field(default_factory=dict)
+
+    def __init__(
+        self,
+        *,
+        converged: bool = False,
+        solution_vec: object | None = None,
+        state_vec: object | None = None,
+        dot_a_phys: float | None = None,
+        entry_source: InnerEntrySource | str | None = None,
+        stats: InnerSolveStats | None = None,
+        failure: FailureInfo | None = None,
+        diagnostics: dict[str, object] | None = None,
+        old_state_on_current_geometry: object | None = None,
+    ) -> None:
+        if solution_vec is not None and state_vec is not None:
+            raise ValueError("Provide at most one of solution_vec or state_vec")
+        self.converged = bool(converged)
+        self.solution_vec = solution_vec if solution_vec is not None else state_vec
+        self.dot_a_phys = dot_a_phys
+        self.entry_source = (
+            None if entry_source is None else InnerEntrySource(entry_source)
+        )
+        self.stats = stats if stats is not None else InnerSolveStats()
+        self.failure = failure if failure is not None else FailureInfo()
+        self.diagnostics = dict(diagnostics) if diagnostics is not None else {}
+        if old_state_on_current_geometry is not None:
+            self.diagnostics.setdefault("legacy_old_state_on_current_geometry", old_state_on_current_geometry)
 
     @property
     def has_state(self) -> bool:
         """Return ``True`` when a backend-native state handle is present."""
 
-        return self.state_vec is not None
+        return self.solution_vec is not None
+
+    @property
+    def state_vec(self) -> object | None:
+        """Compatibility alias for the formal ``solution_vec`` field."""
+
+        return self.solution_vec
+
+    @property
+    def old_state_on_current_geometry(self) -> object | None:
+        """Compatibility alias for legacy diagnostics-only access."""
+
+        return self.diagnostics.get("legacy_old_state_on_current_geometry")
 
     def assert_consistent(self) -> None:
         """Raise ``ValueError`` when core inner-result invariants are violated."""
@@ -168,6 +215,10 @@ class InnerSolveResult:
             raise ValueError("InnerSolveResult.converged must match stats.converged")
         if self.converged and self.failure.failure_class is not FailureClass.NONE:
             raise ValueError("converged inner solve must not carry a non-NONE failure_class")
+        if self.converged and self.solution_vec is None:
+            raise ValueError("converged inner solve must provide solution_vec")
+        if self.entry_source is not None and not isinstance(self.entry_source, InnerEntrySource):
+            raise ValueError("entry_source must be an InnerEntrySource when provided")
 
 
 @dataclass(slots=True, kw_only=True)
@@ -190,7 +241,8 @@ class CorrectorResult:
     """Output of the outer corrector stage for one outer iteration.
 
     Produced by ``outer_corrector.py`` and consumed by
-    ``outer_convergence.py`` and step-level diagnostics.
+    ``outer_convergence.py`` and step-level diagnostics for the next inner
+    entry / transfer chain.
     """
 
     a_new: float
@@ -206,7 +258,7 @@ class OuterConvergenceResult:
     """Convergence assessment for one outer iteration.
 
     Produced by ``outer_convergence.py`` and consumed by the outer-loop driver
-    and step-acceptance policy.
+    and step-acceptance policy. Convergence is defined on ``eps_dot_a``.
     """
 
     converged: bool = False
@@ -229,9 +281,20 @@ class OuterIterationResult:
     a_iter: float
     dot_a_iter: float
     inner: InnerSolveResult
+    entry_source: InnerEntrySource = InnerEntrySource.ACCEPTED_TIME_LEVEL
+    used_transfer: bool = False
+    transfer_identity: bool | None = None
     corrector: CorrectorResult | None = None
     convergence: OuterConvergenceResult | None = None
     diagnostics: dict[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.entry_source, InnerEntrySource):
+            self.entry_source = InnerEntrySource(self.entry_source)
+        if self.entry_source is InnerEntrySource.ACCEPTED_TIME_LEVEL and self.used_transfer:
+            raise ValueError("accepted_time_level entry_source requires used_transfer == False")
+        if self.entry_source is InnerEntrySource.TRANSFER_FROM_PREVIOUS_OUTER and not self.used_transfer:
+            raise ValueError("transfer_from_previous_outer entry_source requires used_transfer == True")
 
 
 @dataclass(slots=True, kw_only=True)
@@ -261,15 +324,16 @@ class StepAcceptanceDecision:
             raise ValueError("ACCEPT action must not require rollback")
 
 
-@dataclass(slots=True, kw_only=True)
+@dataclass(slots=True, kw_only=True, init=False)
 class StepAdvanceResult:
     """Top-level result for one step attempt.
 
     Produced by ``timestepper.py`` and consumed by caller-side control flow,
     logging, and restart / forensic logic.
 
-    ``accepted_state_vec`` is a backend-native accepted state handle, expected
-    to be a PETSc Vec on the formal PETSc path.
+    ``accepted_solution_vec`` is the formal backend-native accepted state
+    handle. ``accepted_state_vec`` is retained as a compatibility alias during
+    the transition.
     """
 
     step_id: int
@@ -280,10 +344,44 @@ class StepAdvanceResult:
     acceptance: StepAcceptanceDecision = field(default_factory=StepAcceptanceDecision)
     predictor: PredictorResult | None = None
     outer_iterations: list[OuterIterationResult] = field(default_factory=list)
-    accepted_state_vec: object | None = None
+    accepted_solution_vec: object | None = None
     accepted_geometry: object | None = None
     failure: FailureInfo = field(default_factory=FailureInfo)
     diagnostics: dict[str, object] = field(default_factory=dict)
+
+    def __init__(
+        self,
+        *,
+        step_id: int,
+        t_old: float,
+        t_new_target: float,
+        dt_attempt: float,
+        accepted: bool = False,
+        acceptance: StepAcceptanceDecision | None = None,
+        predictor: PredictorResult | None = None,
+        outer_iterations: list[OuterIterationResult] | None = None,
+        accepted_solution_vec: object | None = None,
+        accepted_state_vec: object | None = None,
+        accepted_geometry: object | None = None,
+        failure: FailureInfo | None = None,
+        diagnostics: dict[str, object] | None = None,
+    ) -> None:
+        if accepted_solution_vec is not None and accepted_state_vec is not None:
+            raise ValueError("Provide at most one of accepted_solution_vec or accepted_state_vec")
+        self.step_id = int(step_id)
+        self.t_old = t_old
+        self.t_new_target = t_new_target
+        self.dt_attempt = dt_attempt
+        self.accepted = bool(accepted)
+        self.acceptance = acceptance if acceptance is not None else StepAcceptanceDecision()
+        self.predictor = predictor
+        self.outer_iterations = list(outer_iterations) if outer_iterations is not None else []
+        self.accepted_solution_vec = (
+            accepted_solution_vec if accepted_solution_vec is not None else accepted_state_vec
+        )
+        self.accepted_geometry = accepted_geometry
+        self.failure = failure if failure is not None else FailureInfo()
+        self.diagnostics = dict(diagnostics) if diagnostics is not None else {}
 
     @property
     def outer_iter_count(self) -> int:
@@ -306,6 +404,12 @@ class StepAdvanceResult:
         last = self.outer_iterations[-1]
         return bool(last.convergence and last.convergence.converged)
 
+    @property
+    def accepted_state_vec(self) -> object | None:
+        """Compatibility alias for the formal ``accepted_solution_vec`` field."""
+
+        return self.accepted_solution_vec
+
     def assert_consistent(self) -> None:
         """Raise ``ValueError`` when core step-result invariants are violated."""
 
@@ -316,16 +420,16 @@ class StepAdvanceResult:
             raise ValueError("ACCEPT action requires step accepted == True")
         if self.accepted and not self.acceptance.accepted:
             raise ValueError("accepted step requires acceptance.accepted == True")
-        if self.accepted and self.accepted_state_vec is None:
-            raise ValueError("accepted step requires accepted_state_vec to be present")
+        if self.accepted and self.accepted_solution_vec is None:
+            raise ValueError("accepted step requires accepted_solution_vec to be present")
         if self.accepted and self.accepted_geometry is None:
             raise ValueError("accepted step requires accepted_geometry to be present")
         if self.accepted and self.failure.failure_class is not FailureClass.NONE:
             raise ValueError("accepted step must not carry a non-NONE failure_class")
         if self.acceptance.action is StepAction.ACCEPT and self.acceptance.rollback_required:
             raise ValueError("ACCEPT action must not require rollback")
-        if self.acceptance.action is not StepAction.ACCEPT and self.accepted_state_vec is not None:
-            raise ValueError("non-ACCEPT step must not expose accepted_state_vec")
+        if self.acceptance.action is not StepAction.ACCEPT and self.accepted_solution_vec is not None:
+            raise ValueError("non-ACCEPT step must not expose accepted_solution_vec")
 
 
 __all__ = [
@@ -333,6 +437,7 @@ __all__ = [
     "FailureClass",
     "FailureInfo",
     "GuardFailureReason",
+    "InnerEntrySource",
     "InnerSolveResult",
     "InnerSolveStats",
     "OuterConvergenceResult",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Distributed PETSc Vec access helpers and outer-boundary state recovery."""
+"""Distributed PETSc Vec access helpers and State recovery from inner/global Vecs."""
 
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -86,6 +86,15 @@ def _copy_vec_like(vec: object):
             src_restore()
         return out
     raise LocalStateError("unable to copy distributed Vec-like object")
+
+
+def _require_state_init_or_u_guess(ctx) -> None:
+    if getattr(ctx, "u_guess_vec", None) is not None:
+        return
+    if getattr(ctx, "state_init", None) is None:
+        raise LocalStateError(
+            "distributed state Vec builder requires ctx.state_init when ctx.u_guess_vec is absent"
+        )
 
 
 def _composite_get_access(dm_composite, X_global) -> tuple[object, object, object]:
@@ -287,16 +296,14 @@ def distributed_state_vec_builder(*, ctx, PETSc):
     if getattr(ctx, "u_guess_vec", None) is not None:
         return _copy_vec_like(ctx.u_guess_vec)
 
+    _require_state_init_or_u_guess(ctx)
     template = _require_global_vec_template(ctx)
-    if "u_trial_layout_guess" in getattr(ctx, "meta", {}):
-        u_layout = np.asarray(ctx.meta["u_trial_layout_guess"], dtype=np.float64)
-    else:
-        species_maps = getattr(ctx, "meta", {}).get("species_maps")
-        if species_maps is None:
-            raise LocalStateError(
-                "distributed_state_vec_builder requires species_maps when u_guess_vec is absent"
-            )
-        u_layout = pack_state_to_array(ctx.state_guess, ctx.layout, species_maps)
+    species_maps = getattr(ctx, "meta", {}).get("species_maps")
+    if species_maps is None:
+        raise LocalStateError(
+            "distributed_state_vec_builder requires species_maps when ctx.u_guess_vec is absent"
+        )
+    u_layout = pack_state_to_array(ctx.state_init, ctx.layout, species_maps)
 
     return create_distributed_vec_from_layout_array(
         layout_vec=u_layout,
@@ -365,13 +372,47 @@ def recover_state_from_distributed_vec(
     time: float | None = None,
     state_id: str | None = None,
 ):
-    """Recover a full State from a distributed global Vec at an outer boundary."""
+    """Recover one full State from one distributed global Vec."""
 
     arr = gather_layout_vector_from_distributed_vec(
         X_global=X_global,
         parallel_handles=parallel_handles,
     )
     return unpack_array_to_state(arr, layout, species_maps, time=time, state_id=state_id)
+
+
+def state_init_from_previous_inner_result(
+    *,
+    previous_inner_result: object,
+    reference_state_current_mesh: object,
+    layout: object,
+    species_maps: object,
+    geometry_current: object | None = None,
+    parallel_handles: dict[str, object] | None = None,
+    models: object | None = None,
+):
+    """Recover the next inner entry State from the previous distributed inner Vec."""
+
+    _ = models
+    Xg = getattr(previous_inner_result, "solution_vec", None)
+    if Xg is None:
+        Xg = getattr(previous_inner_result, "state_vec", None)
+    if Xg is None:
+        raise LocalStateError("previous_inner_result must provide solution_vec or state_vec")
+    if parallel_handles is None:
+        raise LocalStateError("parallel_handles is required for distributed state recovery")
+
+    state_base = getattr(reference_state_current_mesh, "state", reference_state_current_mesh)
+    time = getattr(geometry_current, "t", getattr(state_base, "time", None))
+    state_id = getattr(state_base, "state_id", None)
+    return recover_state_from_distributed_vec(
+        X_global=Xg,
+        layout=layout,
+        species_maps=species_maps,
+        parallel_handles=parallel_handles,
+        time=time,
+        state_id=state_id,
+    )
 
 
 def state_guess_from_previous_inner_result(
@@ -384,25 +425,16 @@ def state_guess_from_previous_inner_result(
     parallel_handles: dict[str, object] | None = None,
     models: object | None = None,
 ):
-    """Recover the outer-boundary State guess from the previous distributed inner Vec."""
+    """Compatibility wrapper for ``state_init_from_previous_inner_result``."""
 
-    _ = models
-    Xg = getattr(previous_inner_result, "state_vec", None)
-    if Xg is None:
-        raise LocalStateError("previous_inner_result.state_vec is required")
-    if parallel_handles is None:
-        raise LocalStateError("parallel_handles is required for distributed state recovery")
-
-    state_base = getattr(old_state_on_current_geometry, "state", old_state_on_current_geometry)
-    time = getattr(geometry_current, "t", getattr(state_base, "time", None))
-    state_id = getattr(state_base, "state_id", None)
-    return recover_state_from_distributed_vec(
-        X_global=Xg,
+    return state_init_from_previous_inner_result(
+        previous_inner_result=previous_inner_result,
+        reference_state_current_mesh=old_state_on_current_geometry,
         layout=layout,
         species_maps=species_maps,
+        geometry_current=geometry_current,
         parallel_handles=parallel_handles,
-        time=time,
-        state_id=state_id,
+        models=models,
     )
 
 
@@ -569,6 +601,7 @@ def build_local_state_hooks() -> dict[str, object]:
     return {
         "distributed_state_vec_builder": distributed_state_vec_builder,
         "distributed_residual_vec_builder": distributed_residual_vec_builder,
+        "state_init_from_previous_inner_result": state_init_from_previous_inner_result,
         "state_guess_from_previous_inner_result": state_guess_from_previous_inner_result,
     }
 
@@ -588,5 +621,6 @@ __all__ = [
     "local_to_global_add",
     "local_to_global_insert",
     "recover_state_from_distributed_vec",
+    "state_init_from_previous_inner_result",
     "state_guess_from_previous_inner_result",
 ]

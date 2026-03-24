@@ -10,6 +10,8 @@ evaluation, residual/Jacobian assembly, or PETSc solver construction.
 from dataclasses import dataclass, field, replace
 from math import isclose, isfinite
 
+from .nonlinear_types import InnerEntrySource
+
 
 @dataclass(slots=True, kw_only=True)
 class NonlinearModelHandles:
@@ -32,9 +34,11 @@ class NonlinearContext:
     """Fixed-geometry inner-solve context shared by residual/Jacobian/SNES.
 
     This object is the single environment entry point for the Phase 5 inner
-    solve. It carries the frozen outer iterate, current-geometry old state,
-    current state guess, bulk properties, and optional backend-native vector
-    handles without introducing a second global numpy truth source.
+    solve. The formal contract is expressed in terms of ``state_init``,
+    ``accepted_state_n``, ``transfer_in``, and current-mesh reference data.
+    Legacy names such as ``state_guess`` and
+    ``old_state_on_current_geometry`` remain available through read-only
+    compatibility properties during the migration.
     """
 
     cfg: object
@@ -52,10 +56,12 @@ class NonlinearContext:
     dot_a_frozen: float = 0.0
     geometry_current: object | None = None
 
-    state_guess: object | None = None
-    accepted_state_old: object | None = None
-    old_state_on_current_geometry: object | None = None
-    old_mass_on_current_geometry: object | None = None
+    entry_source: InnerEntrySource | None = None
+    state_init: object | None = None
+    accepted_state_n: object | None = None
+    transfer_in: object | None = None
+    reference_state_current_mesh: object | None = None
+    reference_contents_current_mesh: object | None = None
 
     props_current: object | None = None
     models: NonlinearModelHandles = field(default_factory=NonlinearModelHandles)
@@ -73,6 +79,30 @@ class NonlinearContext:
         """Return the current target time for this inner solve."""
 
         return self.t_new
+
+    @property
+    def state_guess(self) -> object | None:
+        """Compatibility alias for the formal ``state_init`` field."""
+
+        return self.state_init
+
+    @property
+    def accepted_state_old(self) -> object | None:
+        """Compatibility alias for the formal ``accepted_state_n`` field."""
+
+        return self.accepted_state_n
+
+    @property
+    def old_state_on_current_geometry(self) -> object | None:
+        """Compatibility alias for ``reference_state_current_mesh``."""
+
+        return self.reference_state_current_mesh
+
+    @property
+    def old_mass_on_current_geometry(self) -> object | None:
+        """Compatibility alias for ``reference_contents_current_mesh``."""
+
+        return self.reference_contents_current_mesh
 
 
 def _infer_geometry_view(grid: object) -> object | None:
@@ -99,6 +129,36 @@ def _layout_has_rd_block(layout: object) -> bool:
     return False
 
 
+def _state_matches_grid(state: object, grid: object) -> bool:
+    n_liq = getattr(state, "n_liq_cells", None)
+    n_gas = getattr(state, "n_gas_cells", None)
+    grid_n_liq = getattr(grid, "n_liq", None)
+    grid_n_gas = getattr(grid, "n_gas", None)
+    return (
+        n_liq is not None
+        and n_gas is not None
+        and grid_n_liq is not None
+        and grid_n_gas is not None
+        and int(n_liq) == int(grid_n_liq)
+        and int(n_gas) == int(grid_n_gas)
+    )
+
+
+def _contents_match_grid(contents: object, grid: object) -> bool:
+    n_liq = getattr(contents, "n_liq_cells", None)
+    n_gas = getattr(contents, "n_gas_cells", None)
+    grid_n_liq = getattr(grid, "n_liq", None)
+    grid_n_gas = getattr(grid, "n_gas", None)
+    return (
+        n_liq is not None
+        and n_gas is not None
+        and grid_n_liq is not None
+        and grid_n_gas is not None
+        and int(n_liq) == int(grid_n_liq)
+        and int(n_gas) == int(grid_n_gas)
+    )
+
+
 def validate_nonlinear_context(ctx: NonlinearContext) -> None:
     """Validate core fixed-geometry context invariants before inner solve use."""
 
@@ -106,11 +166,10 @@ def validate_nonlinear_context(ctx: NonlinearContext) -> None:
         "cfg",
         "layout",
         "grid",
-        "state_guess",
-        "accepted_state_old",
-        "old_state_on_current_geometry",
-        "old_mass_on_current_geometry",
+        "state_init",
+        "accepted_state_n",
         "props_current",
+        "entry_source",
     ):
         if getattr(ctx, name) is None:
             raise ValueError(f"NonlinearContext.{name} must be provided")
@@ -129,17 +188,31 @@ def validate_nonlinear_context(ctx: NonlinearContext) -> None:
         raise ValueError("NonlinearContext.dot_a_frozen must be finite")
     if not isinstance(ctx.outer_iter_id, int) or ctx.outer_iter_id < 0:
         raise ValueError("NonlinearContext.outer_iter_id must be an integer >= 0")
+    if not isinstance(ctx.entry_source, InnerEntrySource):
+        raise ValueError("NonlinearContext.entry_source must be an InnerEntrySource")
 
     if _layout_has_rd_block(ctx.layout):
         raise ValueError("NonlinearContext.layout must not contain a forbidden Rd block")
 
-    if ctx.accepted_state_old is ctx.old_state_on_current_geometry:
-        raise ValueError(
-            "accepted_state_old and old_state_on_current_geometry must remain distinct objects"
-        )
-
     if ctx.geometry_current is None:
         raise ValueError("NonlinearContext.geometry_current must be provided or inferrable from grid")
+
+    if ctx.entry_source is InnerEntrySource.ACCEPTED_TIME_LEVEL:
+        if ctx.transfer_in is not None:
+            raise ValueError("accepted_time_level entry_source requires transfer_in == None")
+    elif ctx.entry_source is InnerEntrySource.TRANSFER_FROM_PREVIOUS_OUTER:
+        if ctx.outer_iter_id < 1:
+            raise ValueError("transfer_from_previous_outer entry_source requires outer_iter_id >= 1")
+        if ctx.transfer_in is None:
+            raise ValueError("transfer_from_previous_outer entry_source requires transfer_in")
+
+    if ctx.reference_state_current_mesh is not None and not _state_matches_grid(ctx.reference_state_current_mesh, ctx.grid):
+        raise ValueError("reference_state_current_mesh must match current grid cell counts")
+    if (
+        ctx.reference_contents_current_mesh is not None
+        and not _contents_match_grid(ctx.reference_contents_current_mesh, ctx.grid)
+    ):
+        raise ValueError("reference_contents_current_mesh must match current grid cell counts")
 
     if ctx.u_guess_vec is not None and "u_guess_array" in ctx.meta:
         raise ValueError("NonlinearContext must not carry a shadow global numpy truth source in meta")
@@ -163,10 +236,16 @@ def build_nonlinear_context(
     dt: float,
     a_current: float,
     dot_a_frozen: float,
-    state_guess: object,
-    accepted_state_old: object,
-    old_state_on_current_geometry: object,
-    old_mass_on_current_geometry: object,
+    state_init: object | None = None,
+    accepted_state_n: object | None = None,
+    entry_source: InnerEntrySource | str | None = None,
+    transfer_in: object | None = None,
+    reference_state_current_mesh: object | None = None,
+    reference_contents_current_mesh: object | None = None,
+    state_guess: object | None = None,
+    accepted_state_old: object | None = None,
+    old_state_on_current_geometry: object | None = None,
+    old_mass_on_current_geometry: object | None = None,
     props_current: object,
     models: NonlinearModelHandles | None = None,
     step_id: int | None = None,
@@ -179,7 +258,46 @@ def build_nonlinear_context(
     meta: dict[str, object] | None = None,
     diagnostics: dict[str, object] | None = None,
 ) -> NonlinearContext:
-    """Build and validate the fixed-geometry inner-solve context."""
+    """Build and validate the fixed-geometry inner-solve context.
+
+    The formal contract uses the new ``state_init`` / ``accepted_state_n`` /
+    ``transfer_in`` language. Legacy parameters remain accepted during the
+    migration, but must not be mixed with their new-name equivalents.
+    """
+
+    if state_init is not None and state_guess is not None:
+        raise ValueError("Provide either state_init or state_guess, not both")
+    if accepted_state_n is not None and accepted_state_old is not None:
+        raise ValueError("Provide either accepted_state_n or accepted_state_old, not both")
+    if reference_state_current_mesh is not None and old_state_on_current_geometry is not None:
+        raise ValueError(
+            "Provide either reference_state_current_mesh or old_state_on_current_geometry, not both"
+        )
+    if reference_contents_current_mesh is not None and old_mass_on_current_geometry is not None:
+        raise ValueError(
+            "Provide either reference_contents_current_mesh or old_mass_on_current_geometry, not both"
+        )
+
+    state_init_eff = state_init if state_init is not None else state_guess
+    accepted_state_n_eff = accepted_state_n if accepted_state_n is not None else accepted_state_old
+    reference_state_eff = (
+        reference_state_current_mesh
+        if reference_state_current_mesh is not None
+        else old_state_on_current_geometry
+    )
+    reference_contents_eff = (
+        reference_contents_current_mesh
+        if reference_contents_current_mesh is not None
+        else old_mass_on_current_geometry
+    )
+    if transfer_in is not None and reference_state_eff is None:
+        reference_state_eff = getattr(transfer_in, "state", None)
+    if transfer_in is not None and reference_contents_eff is None:
+        reference_contents_eff = getattr(transfer_in, "contents", None)
+
+    if entry_source is None:
+        raise ValueError("Provide entry_source explicitly; silent inference is not allowed")
+    entry_source_eff = InnerEntrySource(entry_source)
 
     geometry_view = geometry_current if geometry_current is not None else _infer_geometry_view(grid)
     ctx = NonlinearContext(
@@ -194,10 +312,12 @@ def build_nonlinear_context(
         a_current=float(a_current),
         dot_a_frozen=float(dot_a_frozen),
         geometry_current=geometry_view,
-        state_guess=state_guess,
-        accepted_state_old=accepted_state_old,
-        old_state_on_current_geometry=old_state_on_current_geometry,
-        old_mass_on_current_geometry=old_mass_on_current_geometry,
+        entry_source=entry_source_eff,
+        state_init=state_init_eff,
+        accepted_state_n=accepted_state_n_eff,
+        transfer_in=transfer_in,
+        reference_state_current_mesh=reference_state_eff,
+        reference_contents_current_mesh=reference_contents_eff,
         props_current=props_current,
         models=models if models is not None else NonlinearModelHandles(),
         u_guess_vec=u_guess_vec,
@@ -219,18 +339,50 @@ def clone_context_with_state_guess(
     props_current: object | None = None,
     old_mass_on_current_geometry: object | None = None,
 ) -> NonlinearContext:
-    """Clone a nonlinear context while replacing the current guess-related fields."""
+    """Compatibility wrapper for ``clone_context_with_state_init``."""
+
+    return clone_context_with_state_init(
+        ctx,
+        state_init=state_guess,
+        u_guess_vec=u_guess_vec,
+        props_current=props_current,
+        reference_contents_current_mesh=old_mass_on_current_geometry,
+    )
+
+
+def clone_context_with_state_init(
+    ctx: NonlinearContext,
+    *,
+    state_init: object | None = None,
+    u_guess_vec: object | None = None,
+    props_current: object | None = None,
+    reference_contents_current_mesh: object | None = None,
+    reference_state_current_mesh: object | None = None,
+    transfer_in: object | None = None,
+) -> NonlinearContext:
+    """Clone a nonlinear context while replacing inner-entry-related fields."""
+
+    transfer_in_eff = ctx.transfer_in if transfer_in is None else transfer_in
+    reference_contents_eff = reference_contents_current_mesh
+    if reference_contents_eff is None and transfer_in is not None:
+        reference_contents_eff = getattr(transfer_in, "contents", None)
+    if reference_contents_eff is None:
+        reference_contents_eff = ctx.reference_contents_current_mesh
+
+    reference_state_eff = reference_state_current_mesh
+    if reference_state_eff is None and transfer_in is not None:
+        reference_state_eff = getattr(transfer_in, "state", None)
+    if reference_state_eff is None:
+        reference_state_eff = ctx.reference_state_current_mesh
 
     cloned = replace(
         ctx,
-        state_guess=ctx.state_guess if state_guess is None else state_guess,
+        state_init=ctx.state_init if state_init is None else state_init,
         u_guess_vec=ctx.u_guess_vec if u_guess_vec is None else u_guess_vec,
         props_current=ctx.props_current if props_current is None else props_current,
-        old_mass_on_current_geometry=(
-            ctx.old_mass_on_current_geometry
-            if old_mass_on_current_geometry is None
-            else old_mass_on_current_geometry
-        ),
+        reference_contents_current_mesh=reference_contents_eff,
+        reference_state_current_mesh=reference_state_eff,
+        transfer_in=transfer_in_eff,
         parallel_handles=dict(ctx.parallel_handles),
         meta=dict(ctx.meta),
         diagnostics=dict(ctx.diagnostics),
@@ -243,6 +395,7 @@ __all__ = [
     "NonlinearContext",
     "NonlinearModelHandles",
     "build_nonlinear_context",
+    "clone_context_with_state_init",
     "clone_context_with_state_guess",
     "validate_nonlinear_context",
 ]
