@@ -1,0 +1,107 @@
+case:
+  name: ethanol_transport_only_smoke
+  description: transport-only baseline case for paper_v1
+paths:
+  liquid_database_path: ../data/liquid_db.yaml
+  gas_mechanism_path: ../mech/gas.yaml
+  output_root: out/
+mesh:
+  a0: 0.0001
+  r_end: 0.01
+  n_liq: 40
+  n_gas_near: 80
+  far_stretch_ratio: 1.03
+species:
+  gas_closure_species: N2
+  liquid_closure_species: null
+  liquid_to_gas_species_map:
+    ethanol: C2H5OH
+initialization:
+  gas_temperature: 1000.0
+  gas_pressure: 101325.0
+  liquid_temperature: 300.0
+  gas_composition:
+    O2: 0.21
+    N2: 0.79
+  liquid_composition:
+    ethanol: 1.0
+  t_init_T: 1.0e-05
+  Y_vap_if0:
+    C2H5OH: 0.1
+time_stepper:
+  t0: 0.0
+  t_end: 3.0e-06
+  dt_start: 1.0e-06
+  dt_min: 1.0e-09
+  dt_max: 1.0e-06
+  max_retries_per_step: 4
+  accept_growth_factor: 1.2
+  reject_shrink_factor: 0.5
+outer_stepper:
+  outer_max_iter: 8
+  predictor_mode: explicit_from_previous_dot_a
+  corrector_mode: trapezoidal_fixed_point
+  omega_a: 1.0
+  omega_v: 1.0
+  outer_convergence_mode: eps_dot_a
+  outer_convergence_tol: 1.0e-06
+  eps_ref_dot_a: 1.0e-12
+solver_inner_petsc:
+  snes_type: newtonls
+  linesearch_type: bt
+  snes_rtol: 1.0e-08
+  snes_atol: 1.0e-10
+  snes_stol: 1.0e-12
+  snes_max_it: 50
+  options_prefix: ''
+  lag_jacobian: -1
+  lag_preconditioner: -1
+  ksp_type: fgmres
+  pc_type: fieldsplit
+  ksp_rtol: 1.0e-08
+  ksp_atol: 1.0e-12
+  ksp_max_it: 200
+  restart: 50
+  gmres_modified_gram_schmidt: true
+  gmres_preallocate: true
+  fieldsplit:
+    scheme: bulk_iface
+    type: schur
+    schur_fact_type: full
+    schur_precondition: a11
+    bulk:
+      ksp_type: fgmres
+      pc_type: asm
+      sub_ksp_type: preonly
+      sub_pc_type: ilu
+      asm_overlap: 1
+    iface:
+      ksp_type: preonly
+      pc_type: lu
+recovery:
+  T_min_l: 200.0
+  T_max_l: 800.0
+  T_min_g: 200.0
+  T_max_g: 4000.0
+  liq_h_inv_tol: 1.0e-10
+  liq_h_inv_max_iter: 50
+  gas_h_inv_tol: 1.0e-10
+  gas_h_inv_max_iter: 50
+  use_cantera_hpy_first: true
+diagnostics:
+  verbose_interface_panel: false
+  verbose_property_warnings: true
+  write_step_diag: true
+  write_interface_diag: true
+  write_failure_report: true
+  output_every_n_steps: 1
+output:
+  write_spatial_fields: true
+  write_spatial_species: false
+  write_time_series_scalars: true
+  write_time_series_species: false
+  snapshot_format: npz
+validation:
+  enable_mass_balance_check: true
+  enable_energy_balance_check: true
+  enable_state_bounds_check: true
