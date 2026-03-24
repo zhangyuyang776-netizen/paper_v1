@@ -206,18 +206,18 @@ paper_v1/
   - phase/interface views
   - reduced unknown views 与 full-order state fields 的双向映射
   - 不允许把 `State` 缩减成只保存 reduced unknown
-- `remap.py`
+- emap.py`
   - conservative remap
   - newly exposed subvolume completion
-  - `old_state_on_current_geometry`
+  - current-geometry transfer state for the next inner entry
 - `state_recovery.py`
-  - `rho, rhoY, rhoh -> rho, Y, h, T`
+  - ho, rhoY, rhoh -> rho, Y, h, T`
   - 液相焓反解
   - 气相 HPY/fallback 恢复
   - recovery post-check
 - `logging_utils.py`
   - 统一日志/诊断入口
-  - `run.log`
+  - un.log`
   - `step_diag.csv`
   - `interface_diag.csv`
   - failure forensic records
@@ -227,7 +227,7 @@ paper_v1/
 - `core/` 不定义物理通量
 - `core/` 不定义物性闭合
 - `core/` 不写 residual/Jacobian
-- `remap.py + state_recovery.py` 共同组成 state-transfer 子系统
+- emap.py + state_recovery.py` 共同组成 state-transfer 子系统
 
 ### 4.2 `properties/`
 
@@ -296,7 +296,7 @@ paper_v1/
 - `velocity_recovery.py`
   - 连续方程恢复速度
   - gas-side `Eq.(2.18)` 强施加边界起点
-- `radius_update.py`
+- adius_update.py`
   - `dot_a_phys` 计算
   - 为 outer corrector 提供半径推进物理量
 
@@ -313,18 +313,18 @@ paper_v1/
 
 正式模块：
 
-- `residual_liquid.py`
+- esidual_liquid.py`
   - 液相 bulk 行
   - 能量与液相组分
-- `residual_interface.py`
+- esidual_interface.py`
   - 界面块行
   - 调用 `interface_face.py`、`interface_mass.py`、`interface_energy.py`
   - 组装唯一固定的界面方程结构
   - 不允许 regime-based equation replacement
-- `residual_gas.py`
+- esidual_gas.py`
   - 气相 bulk 行
   - 能量与气相组分
-- `residual_global.py`
+- esidual_global.py`
   - 组装全局 residual
 - `jacobian_pattern.py`
   - 稀疏 pattern builder
@@ -388,7 +388,7 @@ paper_v1/
 
 正式模块：
 
-- `run_case.py`
+- un_case.py`
   - CLI / case runner
   - 初始化全流程
   - 循环调用 `solvers/timestepper.py`
@@ -599,7 +599,7 @@ driver/run_case.py
 
 关键边界：
 
-- `remap -> recovery` 在 `core/` 内部完成
+- emap -> recovery` 在 `core/` 内部完成
 - `interface_face -> interface_mass/interface_energy -> assembly` 是单向链条
 - `parallel/local_state.py` 是 local ghosted view 的唯一入口
 
@@ -616,7 +616,7 @@ driver/run_case.py
 - `layout.py`
 - `grid.py`
 - `state_pack.py`
-- `remap.py`
+- emap.py`
 - `state_recovery.py`
 - `logging_utils.py`
 
@@ -640,14 +640,14 @@ driver/run_case.py
 - `interface_mass.py`
 - `interface_energy.py`
 - `velocity_recovery.py`
-- `radius_update.py`
+- adius_update.py`
 
 ### 9.4 `assembly/`
 
-- `residual_liquid.py`
-- `residual_interface.py`
-- `residual_gas.py`
-- `residual_global.py`
+- esidual_liquid.py`
+- esidual_interface.py`
+- esidual_gas.py`
+- esidual_global.py`
 - `jacobian_pattern.py`
 - `jacobian_liquid.py`
 - `jacobian_interface.py`
@@ -688,7 +688,7 @@ driver/run_case.py
 4. 在 `solvers/petsc_snes.py` 中直接实现 outer predictor-corrector。
 5. 在单组分基线阶段删除 `Yl_full` / `Ys_l_full` 的统一接口字段。
 6. 让任何模块假定 `Nl = 1` 才能工作。
-7. 让 `timestepper.py` 越权替代 `radius_update.py`、`outer_corrector.py`、`step_acceptance.py`。
+7. 让 `timestepper.py` 越权替代 adius_update.py`、`outer_corrector.py`、`step_acceptance.py`。
 8. 在 `core/config_loader.py` 中偷偷兼容旧项目 YAML 顶层命名体系。
 9. 让 `properties/aggregator.py` 计算第二套界面物性/界面通量。
 10. 在 `physics/interface_energy.py` 或 `assembly/residual_interface.py` 中引入 regime-based equation replacement。

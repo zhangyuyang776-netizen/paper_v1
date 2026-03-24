@@ -1,10 +1,16 @@
 # state_recovery_and_enthalpy_inversion_guideline_final
 
+> Sync note:
+> state recovery ?? outer ????????????????
+> outer ????
+> `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`
+> ???????
+
 ## 1. 文件目的
 
 本文档用于为 `paper_v1` 正式规定以下内容：
 
-1. 在 `remap` / `conservative projection` / `newly exposed subvolume completion` 之后，如何从守恒量恢复物理状态；
+1. 在 emap` / `conservative projection` / `newly exposed subvolume completion` 之后，如何从守恒量恢复物理状态；
 2. 如何从
    - \(\rho V\)
    - \(\rho Y_i V\)
@@ -17,7 +23,7 @@
 3. 液相焓反解（enthalpy inversion）的正式算法；
 4. 气相焓反解的正式算法；
 5. 恢复失败的判据、允许的局部修正、以及必须终止恢复的情况；
-6. recovery 模块与 `remap`、`inner residual`、`diagnostics` 的职责边界。
+6. recovery 模块与 emap`、`inner residual`、`diagnostics` 的职责边界。
 
 本文档是 `paper_v1` 中**状态恢复与焓反解**的正式定稿文件。
 
@@ -33,16 +39,16 @@
 
 典型输入来自：
 
-- `remap_and_conservative_projection_guideline_final.md`
+- emap_and_conservative_projection_guideline_final.md`
 - 界面相邻新暴露子体积守恒补全
-- `old_state_on_current_geometry` 的构造过程
+- current-geometry transfer state 的构造过程
 
 ## 2.2 本文件不解决的问题
 
 本文件不负责：
 
 1. 守恒量如何从旧网格搬运到新网格  
-   → 由 `remap_and_conservative_projection_guideline_final.md` 负责
+   → 由 emap_and_conservative_projection_guideline_final.md` 负责
 2. `T, Y` 已知时如何正向算物性  
    → 由液相物性模块 / Cantera 正向接口负责
 3. bulk / interface residual 如何组装  
@@ -54,7 +60,7 @@
 
 在 `paper_v1` 中，焓反解的主要使用场景不是 inner 主未知量本身，而是：
 
-- `remap` 后的 `old_state_on_current_geometry`
+- `remap` 后的 current-geometry transfer state
 - newly exposed subvolume 守恒补全后的状态恢复
 - 某些局部 post-correction 后的一致性恢复
 
@@ -296,7 +302,7 @@ Y_{l,\text{full}} = [1.0]
 
 一旦发生上述情况，应返回：
 
-- `recovery_fail = True`
+- ecovery_fail = True`
 - `failure_class = composition_recovery_fail`
 
 ---
@@ -556,7 +562,7 @@ T_0 \leftarrow \min(\max(T_0,T_{min,l}),T_{max,l})
 然后读取：
 
 - `T`
-- `rho`
+- ho`
 - `X`
 - `cp`
 - `k`
@@ -715,7 +721,7 @@ h_{g,recomputed}=h_g(T_g,P_\infty,Y_g)
 
 ## 10.1 输入来源
 
-恢复模块接收 `remap` 模块或守恒补全模块输出的：
+恢复模块接收 emap` 模块或守恒补全模块输出的：
 
 - \((\rho V)\)
 - \(((\rho Y_i)V)\)
@@ -779,7 +785,7 @@ old\_state\_on\_current\_geometry
 4. 焓正反不一致
 5. Cantera 状态设置失败后仍无可用 fallback
 
-这些都必须直接判为 `recovery_fail`。
+这些都必须直接判为 ecovery_fail`。
 
 ---
 
@@ -807,8 +813,8 @@ old\_state\_on\_current\_geometry
 - `gas_recovered_T_max`
 
 ### 全局
-- `recovery_fail_count`
-- `recovery_failure_class_max`
+- ecovery_fail_count`
+- ecovery_failure_class_max`
 - `max_Y_sum_err`
 - `max_negative_partial_density`
 
@@ -819,7 +825,7 @@ old\_state\_on\_current\_geometry
 以下参数必须在配置文件中显式存在，不允许隐藏默认值：
 
 ### 通用
-- `rho_min`
+- ho_min`
 - `m_min`
 - `species_recovery_eps_abs`
 - `Y_sum_tol`
@@ -854,7 +860,7 @@ old\_state\_on\_current\_geometry
 5. 在 recovery 中默认猜 closure species
 6. 跳过正反一致性检查
 7. 用邻近单元温度直接代替焓反解结果
-8. 用“温度插值”替代 `rho, rhoY, rhoh -> T` 的正式恢复
+8. 用“温度插值”替代 ho, rhoY, rhoh -> T` 的正式恢复
 9. 让 recovery 模块偷偷修改 remap 的守恒量输入
 10. 对恢复失败只打印 warning 而不向 step-level failure 传递错误状态
 
@@ -902,6 +908,6 @@ old\_state\_on\_current\_geometry
 - 恢复后必须做合法性检查与正反一致性检查
 - 只有组分的舍入级误差允许做最小修正
 - 焓/温度/密度问题一律视为 hard fail
-- 恢复结果构成 `old_state_on_current_geometry`，供 inner residual 与 diagnostics 使用
+- 恢复结果构成 current-geometry transfer state，供下一轮 inner residual 与 diagnostics 使用；若 `k=0`，则该链路必须退化为 identity
 
 这就是 `paper_v1` 的状态恢复与焓反解正式定稿版本。

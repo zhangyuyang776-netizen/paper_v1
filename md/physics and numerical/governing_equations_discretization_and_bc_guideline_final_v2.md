@@ -1,5 +1,10 @@
 # governing_equations_discretization_and_bc_guideline_final_v2
 
+> Sync note:
+> ????? outer/inner ???????
+> `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`
+> ???????
+
 ## 1. 文件目的
 
 本文档用于为 `paper_v1` 正式固定以下内容：
@@ -239,7 +244,7 @@ V_{cd}= -\sum_{m=1}^{N_g} Y_{g,m}V^0_{d,m}
 
 ## 3.4 界面控制方程
 
-界面位于 `r = a(t)`，界面块采用论文式界面变量块主线。
+界面位于  = a(t)`，界面块采用论文式界面变量块主线。
 
 ### 3.4.1 共有/可凝组分守恒：Eq.(2.15)
 
@@ -389,8 +394,8 @@ u_{l,if}
 
 采用 1D 球对称 cell-centered finite volume。
 
-- cell center：`r_n`
-- left/right face：`r_{n-}, r_{n+}`
+- cell center：_n`
+- left/right face：_{n-}, r_{n+}`
 - face area：
   \[
   A_{n\pm} = 4\pi r_{n\pm}^2
@@ -728,7 +733,7 @@ G_{g,n+}=G_{g,n-}+C_{g,n}-S_{g,n}
 
 ## 8. 特殊控制面离散闭合：中心与远场
 
-## 8.1 中心边界 `r = 0`
+## 8.1 中心边界  = 0`
 
 ### 连续边界条件
 液相中心满足：
@@ -785,7 +790,7 @@ G_{l,1-}=0
 
 ---
 
-## 8.2 far-field 边界 `r = R_{end}`
+## 8.2 far-field 边界  = R_{end}`
 
 ### 连续边界条件
 `paper_v1` 首版采用 far-field Dirichlet：
@@ -1395,7 +1400,7 @@ U = [\Phi_l,\phi_s,\Phi_g]
 
 ### 外层第 `k` 轮
 1. 给定 `a^(k), \dot a^(k), grid^(k), v_c^(k)`
-2. 形成 `old_state_on_current_geometry`
+2. 设置当前轮 inner 入口状态；`k=0` 时直接取 `U^n`，`k>0` 时使用上一轮 outer 未收敛后 remap/recovery 形成的状态转移结果
 3. 进入 inner solve
 
 ### inner solve

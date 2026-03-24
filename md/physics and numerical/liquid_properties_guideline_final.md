@@ -1,4 +1,4 @@
-﻿# liquid_properties_guideline_final
+# liquid_properties_guideline_final
 
 ## 1. 文件目的
 
@@ -477,11 +477,11 @@ R_{g,i}=\frac{R_u}{W_i}
 
 其中：
 - `X_l,i` 为液相摩尔分数
-- `rho_l,i` 为纯组分液相密度 
+- ho_l,i` 为纯组分液相密度 
 
 ### 所需输入
 - `X_l,i`
-- `rho_l,i(T)`
+- ho_l,i(T)`
 
 ---
 
@@ -789,8 +789,8 @@ W_l = \left(\sum_i \frac{Y_{l,i}}{W_i}\right)^{-1}
   - `cp_coeffs`
   - `cp_T_range`
   - `hvap_ref`
-  - `rho_model`
-  - `rho_coeffs`
+  - ho_model`
+  - ho_coeffs`
   - `k_model`
   - `k_coeffs`
   - `mu_model`
@@ -981,7 +981,7 @@ species:
 
 需要：
 
-* `rho_coeffs: A-F`
+* ho_coeffs: A-F`
 
 ### 10.3 比热容 (c_{p,l,i})
 

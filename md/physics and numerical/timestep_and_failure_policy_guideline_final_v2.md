@@ -1,5 +1,10 @@
 # timestep_and_failure_policy_guideline_final
 
+> Sync note:
+> outer 主时序统一以
+> `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`
+> 为唯一主合同。本文件不再单独定义与其冲突的 outer/inner 顺序。
+
 ## 1. 文件定位
 
 本文档用于正式规定 `paper_v1` 项目的以下内容：
@@ -52,6 +57,9 @@
 - `outer`：更新 `a` / `dot_a`、网格、`v_c`、remap，并检查界面速度一致性；
 - `step controller`：负责时间步接受/拒绝、失败回退、步长缩小/增长。
 
+其中，outer 的正式时序只认
+`outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`。
+
 必须严格区分以下三个状态：
 
 1. `inner_converged`
@@ -87,7 +95,8 @@
 - 更新 `a^(k)`、`dot_a^(k)`
 - 构建当前几何 `G^(k)`
 - 构建控制面速度 `v_c^(k)`
-- 将旧已接受状态 remap 到当前几何
+- 设置当前轮 inner 入口状态：`k=0` 时 `U_init^(0)=U^n`，`k>0` 时入口状态来自上一轮 outer 的状态转移结果
+- 当 outer 未收敛并更新网格后，执行 remap / recovery，形成下一轮入口状态
 - 调用 inner
 - 检查界面速度一致性
 - 决定本时间步是否接受
@@ -156,7 +165,7 @@
 2. 对于第 `k` 轮 outer iteration：
    - 构建 `G^(k)`；
    - 计算 `v_c^(k)`；
-   - 将已接受旧状态 remap 到 `G^(k)`；
+   - 设置当前轮入口状态：`k=0` 时直接取 `U^n`，`k>0` 时取上一轮状态转移结果；
    - 调用 inner 求解固定几何下的新状态；
    - 若 inner fail，则当前 step attempt 进入局部补救或直接 reject；
    - 若 inner converged，则计算
@@ -285,7 +294,7 @@
    \[
    \varepsilon_{\dot a} < 10^{-5}
    \]
-3. remap 与状态恢复成功；
+3. 若发生网格更新，则状态转移与状态恢复成功；
 4. 物性、EOS、焓反解、界面平衡等计算无失败；
 5. 新状态未出现不可接受的非物理值；
 6. 形成了完整的新已接受状态 `state^{n+1}`。
@@ -503,7 +512,7 @@ dt \leftarrow \min(1.1\,dt,\ dt_{\max})
    \[
    dt < dt_{\min}
    \]
-2. 同一已接受状态下的重试次数超过 `retry_max_per_step`
+2. 同一已接受状态下的重试次数超过 etry_max_per_step`
 3. 连续出现不可恢复的 property / remap / recovery failure
 4. 连续出现非物理状态，且缩步后仍不能恢复
 
@@ -514,7 +523,7 @@ dt \leftarrow \min(1.1\,dt,\ dt_{\max})
 - `dt_start`
 - `dt_max`
 - `dt_min`
-- `retry_max_per_step`
+- etry_max_per_step`
 - `inner_max_iter`
 - `outer_max_iter`
 
@@ -580,7 +589,7 @@ outer 采用：
    - for `k = 0 ... outer_max_iter-1`
      1. build geometry `G^(k)`
      2. compute `v_c^(k)`
-     3. remap accepted old state to current geometry
+     3. set current inner entry state (`U^n` for `k=0`, transferred state for `k>0`)
      4. call PETSc SNES for inner solve
      5. if inner fails:
         - 若当前 step attempt 尚未使用局部补救，则执行 1 次局部补救
@@ -618,8 +627,8 @@ outer 采用：
 - `t_n`
 - `dt_try`
 - `accepted / rejected`
-- `reject_reason`
-- `retry_count_for_current_state`
+- eject_reason`
+- etry_count_for_current_state`
 
 ### 17.2 outer-level
 - `outer_iter_count`
@@ -643,8 +652,8 @@ outer 采用：
 ### 17.4 failure-level
 - `failure_class`
 - `property_fail_flag`
-- `remap_fail_flag`
-- `recovery_fail_flag`
+- emap_fail_flag`
+- ecovery_fail_flag`
 - `nonphysical_flag`
 
 ### 17.5 dt-control
@@ -652,7 +661,7 @@ outer 采用：
 - `dt_new`
 - `dt_change_reason`
   - `growth_after_q_success`
-  - `reject_half_step`
+  - eject_half_step`
   - `hold_constant`
 
 ### 17.6 额外建议输出
@@ -672,7 +681,7 @@ outer 采用：
 1. `dt_start`
 2. `dt_max`
 3. `dt_min`
-4. `retry_max_per_step`
+4. etry_max_per_step`
 5. `inner_max_iter`
 6. `outer_max_iter`
 7. `outer_relaxation_initial`

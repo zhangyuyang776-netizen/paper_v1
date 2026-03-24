@@ -99,7 +99,7 @@
 
 - `a = Rd`
 - 当前网格节点位置
-- 面位置 `r_f`
+- 面位置 _f`
 - 面面积 `A_f`
 - 单元体积 `V_n`
 - 控制面速度 `v_c`
@@ -427,6 +427,12 @@ a^{n+1,(k)},\quad \text{grid}^{(k)},\quad v_c^{(k)}
 - `old_state_on_current_geometry`
 - `old_mass_on_current_geometry`
 
+正式时序说明：
+
+- `k=0` 时，这一步对应的 old-state data 直接来自时间层开始状态，若实现保留统一接口则必须退化为 identity
+- `k>0` 时，这一步对应上一轮 outer 未收敛后的 remap / recovery 状态转移结果
+- 不允许在每轮 inner 前都从 `U^n` 重新现做一次与当前几何的 remap
+
 这是为了让内层 BE 存储项与当前几何完全一致。
 
 ### 12.4 第二步：在固定当前几何上做内层 nonlinear transport solve
@@ -463,7 +469,7 @@ a^{n+1,(k)},\quad \text{grid}^{(k)},\quad v_c^{(k)}
 
 - `mpp^(k)`
 - `u_l,if^(k)`
-- `rho_l,if^(k)`
+- ho_l,if^(k)`
 
 更新界面速度：
 
@@ -547,7 +553,7 @@ continuity 存储项中的比较必须是：
 更新界面时：
 
 - `mpp`
-- `rho_l,if`
+- ho_l,if`
 - `u_l,if`
 
 必须来自**同一次内层解**和**同一 outer iteration**
@@ -577,7 +583,7 @@ continuity 存储项中的比较必须是：
    - `k`
    - `D`
 3. 读取当前外层几何：
-   - 面位置 `r_f`
+   - 面位置 _f`
    - 面面积 `A_f`
    - 单元体积 `V_n`
    - 控制面速度 `v_c`

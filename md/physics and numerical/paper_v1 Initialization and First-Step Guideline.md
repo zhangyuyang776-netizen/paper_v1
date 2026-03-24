@@ -1,5 +1,10 @@
 # paper_v1 Initialization and First-Step Guideline (Final)
 
+> Sync note:
+> 本文件中涉及 outer/inner 正式时序的内容，统一以
+> `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`
+> 为唯一主合同；若本文件旧表述与其冲突，以新文件为准。
+
 ## 1. 文件定位
 
 本文档用于规定 `paper_v1` 项目中：
@@ -55,6 +60,10 @@ t = 0
 - `inner`：负责 fixed-geometry 下的 liquid bulk + interface block + gas bulk 的耦合非线性求解
 
 不得为首步单独发明另一套主算法。
+
+首步的 outer/inner 正式时序以
+`outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`
+为唯一主合同。
 
 ---
 
@@ -438,15 +447,19 @@ v_c^{(0)}(r)=0
 
 即首轮 outer 几何上没有网格运动。
 
-### 10.3 首步 remap
+### 10.3 首步状态转移接口
 
-首步第 0 轮 remap 仍调用正式 remap 接口，但由于几何未变，结果应退化为恒等映射：
+首步第 0 轮 outer 的 inner 入口状态直接取初始化状态：
 
 \[
-\text{old\_state\_on\_current\_geometry}^{(0)} = U^0
+U_{\mathrm{init}}^{(0)} = U^0
 \]
 
-不建议为首步单独绕过 remap 模块，避免主流程分裂。
+正式规定：
+
+1. 首步第 0 轮 inner 之前，不执行会改变状态值的非平凡 remap + state recovery；
+2. 若实现上保留统一状态转移接口，则首轮状态转移必须严格退化为 identity；
+3. 不建议为首步单独发明一套不同于正式主线的 outer/inner 流程。
 
 ### 10.4 首步 inner 初值
 
@@ -461,8 +474,10 @@ U_{\mathrm{init}}^{(0)} = U^0
 若首步 outer 后续还发生第 \(k>0\) 轮迭代，则仍按正式主线：
 
 \[
-U_{\mathrm{init}}^{(k)} = U^{(k-1)}
+U_{\mathrm{init}}^{(k)} = U_{\mathrm{transfer}}^{(k-1 \to k)}
 \]
+
+也就是说，后续轮的入口状态来自上一轮 outer 未收敛后的状态转移结果，而不是在每轮 inner 前重新从 `U^0` 现做一次 remap/recovery。
 
 ---
 
@@ -487,7 +502,9 @@ U_{\mathrm{init}}^{(k)} = U^{(k-1)}
 2. 不得用猜测的非零 `mpp_init` 推进初始几何；
 3. 不得把 `Rd/a` 临时塞回 inner 主未知量；
 4. 不得为首步定义不同于正式 residual structure 的方程组；
-5. 不得把界面气相初值直接强制设为平衡值来替代 Eq. (2.21) 初始化。
+5. 不得把界面气相初值直接强制设为平衡值来替代 Eq. (2.21) 初始化；
+6. 不得在首步第 0 轮 inner 前执行会改变状态值的非平凡 remap + state recovery；
+7. 不得把 `old_state_on_current_geometry^(0)` 作为首步 inner 的独立主合同变量来替代 `U_{\mathrm{init}}^{(0)} = U^0`。
 
 ---
 
@@ -567,17 +584,17 @@ U_{\mathrm{init}}^{(k)} = U^{(k-1)}
 
 ### 13.2 bulk state
 - `liq_state0`
-  - `rho_l`
+  - ho_l`
   - `T_l`
   - `Y_l_full`
-  - `rhoY_l`
-  - `rhoh_l`
+  - hoY_l`
+  - hoh_l`
 - `gas_state0`
-  - `rho_g`
+  - ho_g`
   - `T_g`
   - `Y_g_full`
-  - `rhoY_g`
-  - `rhoh_g`
+  - hoY_g`
+  - hoh_g`
 
 ### 13.3 interface state
 - `Ts0`

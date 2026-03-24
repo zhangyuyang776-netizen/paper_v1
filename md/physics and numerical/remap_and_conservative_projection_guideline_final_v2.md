@@ -102,7 +102,7 @@
 
 然后再从这些守恒量恢复：
 
-- `rho`
+- ho`
 - `Y`
 - `h`
 - `T`
@@ -348,13 +348,13 @@ V_{ij}^{ov}=0
 
 remap 完成后，得到的是新几何上的守恒量：
 
-- `rho`
-- `rho Y`
-- `rho h`
+- ho`
+- ho Y`
+- ho h`
 
 而 inner residual 组装需要的往往是：
 
-- `rho`
+- ho`
 - `Y`
 - `h`
 - `T`
@@ -789,11 +789,11 @@ H_l^{old,*}
 
 首版至少应输出以下 diagnostics：
 
-- `remap_mass_err_liquid`
-- `remap_mass_err_gas`
-- `remap_species_err_max`
-- `remap_enthalpy_err_liquid`
-- `remap_enthalpy_err_gas`
+- emap_mass_err_liquid`
+- emap_mass_err_gas`
+- emap_species_err_max`
+- emap_enthalpy_err_liquid`
+- emap_enthalpy_err_gas`
 
 这样才能在 outer/inner 循环出问题时，第一时间判断是不是 remap 在作恶。
 
@@ -820,7 +820,7 @@ outer module 负责：
 inner `SNES` / Newton solve 只负责：
 
 - 在当前 fixed geometry 上解 transport nonlinear system
-- 使用 `old_state_on_current_geometry`
+- 使用当前轮已经准备好的 current-geometry old-state data；`k=0` 时可严格退化为 identity，`k>0` 时来自上一轮 outer 状态转移
 - 不负责重建网格
 - 不负责 remap
 - 不负责几何 accept / reject
@@ -832,17 +832,17 @@ inner `SNES` / Newton solve 只负责：
 remap / projection 模块输出：
 
 ### 液相
-- `rho_l_old_star`
-- `rhoY_l_old_star`
-- `rhoh_l_old_star`
+- ho_l_old_star`
+- hoY_l_old_star`
+- hoh_l_old_star`
 - `T_l_old_star`
 - `Y_l_old_star`
 - `h_l_old_star`
 
 ### 气相
-- `rho_g_old_star`
-- `rhoY_g_old_star`
-- `rhoh_g_old_star`
+- ho_g_old_star`
+- hoY_g_old_star`
+- hoh_g_old_star`
 - `T_g_old_star`
 - `Y_g_old_star`
 - `h_g_old_star`
@@ -876,15 +876,15 @@ old\_state\_on\_current\_geometry
 
 ### Step 3
 对液相执行一阶 conservative overlap remap：
-- `rho`
-- `rhoY`
-- `rhoh`
+- ho`
+- hoY`
+- hoh`
 
 ### Step 4
 对气相第二段执行一阶 conservative overlap remap：
-- `rho`
-- `rhoY`
-- `rhoh`
+- ho`
+- hoY`
+- hoh`
 
 ### Step 5
 对气相第三段直接拷贝旧状态
@@ -908,7 +908,7 @@ old\_state\_on\_current\_geometry
 必要时做局部 post-correction
 
 ### Step 11
-形成 `old_state_on_current_geometry`，交给 inner solve
+形成下一轮 inner 入口所需的 current-geometry transfer state；它在 outer 未收敛并更新网格后使用，而不是每轮 inner 前都从 `U^n` 重新现做一次
 
 ---
 
@@ -942,7 +942,7 @@ old\_state\_on\_current\_geometry
 5. 在第三段固定网格区仍然做无意义的几何 remap
 6. 省略 remap 后的守恒误差检查
 7. 让 post-correction 替代主 remap 算法
-8. 在 inner solve 中修改 `old_state_on_current_geometry`
+8. 在 inner solve 中修改状态转移产物
 9. 把界面新暴露子体积当作独立长期网格层来存储
 10. 用当前 inner/outer 迭代中的新界面状态去补 old-state remap
 
@@ -955,15 +955,15 @@ old\_state\_on\_current\_geometry
 1. `paper_v1` uses first-order, phase-wise, cell-average conservative remap as the mainline strategy.
 2. Remap is performed on conservative cell contents, not directly on primitive variables.
 3. The remapped quantities are:
-   - `rho`
-   - `rhoY`
-   - `rhoh`
+   - ho`
+   - hoY`
+   - hoh`
 4. Liquid and gas are remapped separately; no cross-phase remap is allowed.
 5. Region-3 fixed gas grid is not geometrically remapped.
 6. Newly uncovered / newly covered interface-adjacent thin layers are handled by dedicated conservative completion / geometric deletion, not by ordinary overlap remap.
 7. Interface-adjacent newly exposed subcell volume is not stored as an independent persistent mesh layer; it is treated as a temporary subvolume used to complete the conservative content of the interface-nearest control volume.
 8. The newly exposed subcell volume must be completed using the phase-consistent interface state from the old accepted time level, not from neighboring cell-average values and not from current iterative new states.
-9. `old_state_on_current_geometry` is the only valid old-state input for the inner fixed-geometry residual.
+9. The only valid old-state input for the inner fixed-geometry residual is the current-geometry transfer state already prepared for that outer iterate.
 10. Remap must preserve phase-wise total mass, species mass, and enthalpy up to numerical tolerance.
 11. Post-correction is optional and local; it cannot replace the conservative remap core.
 12. Higher-order remap is a future upgrade path, not part of the first-release mainline.
@@ -980,6 +980,6 @@ old\_state\_on\_current\_geometry
 - **第三段固定网格直接复用旧状态**
 - **界面新暴露子体积按旧已接受时间层的相别一致界面状态进行守恒补全**
 - **新覆盖体积执行几何删去**
-- **形成 old_state_on_current_geometry 供 inner solve 使用**
+- **形成供下一轮 inner 使用的 current-geometry transfer state**
 
 这就是 `paper_v1` 的 remap 与 conservative projection 指导文件最终定稿版本。

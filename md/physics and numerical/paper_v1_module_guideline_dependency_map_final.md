@@ -21,14 +21,14 @@
 
 | 模块 | 必须先读的指导文件 |
 |---|---|
-| `core/types.py` | `paper_v1_config_schema_guideline_final.md`, `unknowns_strategy_guideline_final.md`, `outer_inner_iteration_coupling_guideline_final.md`, `timestep_and_failure_policy_guideline_final_v2.md` |
+| `core/types.py` | `paper_v1_config_schema_guideline_final.md`, `unknowns_strategy_guideline_final.md`, `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`, `timestep_and_failure_policy_guideline_final_v2.md` |
 | `core/config_schema.py` | `paper_v1_config_schema_guideline_final.md`, `liquid_properties_guideline_final.md`, `petsc_solver_and_parallel_architecture_guideline_final.md`, `timestep_and_failure_policy_guideline_final_v2.md`, `diagnostics_and_conservation_monitoring_guideline_final.md` |
 | `core/config_loader.py` | `paper_v1_config_schema_guideline_final.md` |
 | `core/preprocess.py` | `paper_v1_config_schema_guideline_final.md`, `unknowns_strategy_guideline_final.md`, `paper_v1 Initialization and First-Step Guideline.md`, `liquid_properties_guideline_final.md`, `petsc_solver_and_parallel_architecture_guideline_final.md`, `timestep_and_failure_policy_guideline_final_v2.md` |
 | `core/layout.py` | `unknowns_strategy_guideline_final.md`, `interface_block_unknowns_and_residuals_table_final.md`, `paper_v1_config_schema_guideline_final.md`, `petsc_solver_and_parallel_architecture_guideline_final.md` |
-| `core/grid.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `outer_inner_iteration_coupling_guideline_final.md`, `paper_v1 Initialization and First-Step Guideline.md`, `velocity_recovery_guideline_final.md` |
+| `core/grid.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`, `paper_v1 Initialization and First-Step Guideline.md`, `velocity_recovery_guideline_final.md` |
 | `core/state_pack.py` | `unknowns_strategy_guideline_final.md`, `interface_block_unknowns_and_residuals_table_final.md`, `petsc_solver_and_parallel_architecture_guideline_final.md` |
-| `core/remap.py` | `remap_and_conservative_projection_guideline_final_v2.md`, `outer_inner_iteration_coupling_guideline_final.md`, `state_recovery_and_enthalpy_inversion_guideline_final.md`, `velocity_recovery_guideline_final.md`, `diagnostics_and_conservation_monitoring_guideline_final.md` |
+| `core/remap.py` | emap_and_conservative_projection_guideline_final_v2.md`, `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`, `state_recovery_and_enthalpy_inversion_guideline_final.md`, `velocity_recovery_guideline_final.md`, `diagnostics_and_conservation_monitoring_guideline_final.md` |
 | `core/state_recovery.py` | `state_recovery_and_enthalpy_inversion_guideline_final.md`, `liquid_properties_guideline_final.md`, `unknowns_strategy_guideline_final.md`, `diagnostics_and_conservation_monitoring_guideline_final.md` |
 | `core/logging_utils.py` | `diagnostics_and_conservation_monitoring_guideline_final.md` |
 
@@ -54,13 +54,13 @@
 | `physics/initial.py` | `paper_v1 Initialization and First-Step Guideline.md`, `unknowns_strategy_guideline_final.md`, `governing_equations_discretization_and_bc_guideline_final_v2.md` |
 | `physics/flux_gas.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `velocity_recovery_guideline_final.md`, `unknowns_strategy_guideline_final.md` |
 | `physics/flux_liq.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `unknowns_strategy_guideline_final.md`, `liquid_properties_guideline_final.md`, `velocity_recovery_guideline_final.md` |
-| `physics/flux_convective.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `velocity_recovery_guideline_final.md`, `outer_inner_iteration_coupling_guideline_final.md` |
+| `physics/flux_convective.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `velocity_recovery_guideline_final.md`, `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md` |
 | `physics/energy_flux.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `liquid_properties_guideline_final.md`, `interface_block_unknowns_and_residuals_table_final.md` |
-| `physics/interface_face.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `interface_block_unknowns_and_residuals_table_final.md`, `unknowns_strategy_guideline_final.md`, `liquid_properties_guideline_final.md`, `outer_inner_iteration_coupling_guideline_final.md` |
-| `physics/interface_mass.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `interface_block_unknowns_and_residuals_table_final.md`, `unknowns_strategy_guideline_final.md`, `outer_inner_iteration_coupling_guideline_final.md`, `velocity_recovery_guideline_final.md`, `liquid_properties_guideline_final.md` |
+| `physics/interface_face.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `interface_block_unknowns_and_residuals_table_final.md`, `unknowns_strategy_guideline_final.md`, `liquid_properties_guideline_final.md`, `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md` |
+| `physics/interface_mass.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `interface_block_unknowns_and_residuals_table_final.md`, `unknowns_strategy_guideline_final.md`, `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`, `velocity_recovery_guideline_final.md`, `liquid_properties_guideline_final.md` |
 | `physics/interface_energy.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `interface_block_unknowns_and_residuals_table_final.md`, `liquid_properties_guideline_final.md`, `unknowns_strategy_guideline_final.md` |
-| `physics/velocity_recovery.py` | `velocity_recovery_guideline_final.md`, `governing_equations_discretization_and_bc_guideline_final_v2.md`, `outer_inner_iteration_coupling_guideline_final.md`, `interface_block_unknowns_and_residuals_table_final.md`, `petsc_solver_and_parallel_architecture_guideline_final.md` |
-| `physics/radius_update.py` | `outer_inner_iteration_coupling_guideline_final.md`, `governing_equations_discretization_and_bc_guideline_final_v2.md`, `interface_block_unknowns_and_residuals_table_final.md`, `timestep_and_failure_policy_guideline_final_v2.md` |
+| `physics/velocity_recovery.py` | `velocity_recovery_guideline_final.md`, `governing_equations_discretization_and_bc_guideline_final_v2.md`, `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`, `interface_block_unknowns_and_residuals_table_final.md`, `petsc_solver_and_parallel_architecture_guideline_final.md` |
+| `physics/radius_update.py` | `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`, `governing_equations_discretization_and_bc_guideline_final_v2.md`, `interface_block_unknowns_and_residuals_table_final.md`, `timestep_and_failure_policy_guideline_final_v2.md` |
 
 ---
 
@@ -68,10 +68,10 @@
 
 | 模块 | 必须先读的指导文件 |
 |---|---|
-| `assembly/residual_liquid.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `unknowns_strategy_guideline_final.md`, `velocity_recovery_guideline_final.md`, `outer_inner_iteration_coupling_guideline_final.md` |
-| `assembly/residual_interface.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `interface_block_unknowns_and_residuals_table_final.md`, `unknowns_strategy_guideline_final.md`, `outer_inner_iteration_coupling_guideline_final.md`, `velocity_recovery_guideline_final.md` |
-| `assembly/residual_gas.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `unknowns_strategy_guideline_final.md`, `velocity_recovery_guideline_final.md`, `outer_inner_iteration_coupling_guideline_final.md` |
-| `assembly/residual_global.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `interface_block_unknowns_and_residuals_table_final.md`, `unknowns_strategy_guideline_final.md`, `velocity_recovery_guideline_final.md`, `outer_inner_iteration_coupling_guideline_final.md`, `state_recovery_and_enthalpy_inversion_guideline_final.md`, `petsc_solver_and_parallel_architecture_guideline_final.md` |
+| `assembly/residual_liquid.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `unknowns_strategy_guideline_final.md`, `velocity_recovery_guideline_final.md`, `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md` |
+| `assembly/residual_interface.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `interface_block_unknowns_and_residuals_table_final.md`, `unknowns_strategy_guideline_final.md`, `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`, `velocity_recovery_guideline_final.md` |
+| `assembly/residual_gas.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `unknowns_strategy_guideline_final.md`, `velocity_recovery_guideline_final.md`, `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md` |
+| `assembly/residual_global.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `interface_block_unknowns_and_residuals_table_final.md`, `unknowns_strategy_guideline_final.md`, `velocity_recovery_guideline_final.md`, `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`, `state_recovery_and_enthalpy_inversion_guideline_final.md`, `petsc_solver_and_parallel_architecture_guideline_final.md` |
 | `assembly/jacobian_pattern.py` | `unknowns_strategy_guideline_final.md`, `interface_block_unknowns_and_residuals_table_final.md`, `petsc_solver_and_parallel_architecture_guideline_final.md` |
 | `assembly/jacobian_liquid.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `unknowns_strategy_guideline_final.md`, `petsc_solver_and_parallel_architecture_guideline_final.md` |
 | `assembly/jacobian_interface.py` | `governing_equations_discretization_and_bc_guideline_final_v2.md`, `interface_block_unknowns_and_residuals_table_final.md`, `unknowns_strategy_guideline_final.md`, `petsc_solver_and_parallel_architecture_guideline_final.md` |
@@ -86,15 +86,15 @@
 | 模块 | 必须先读的指导文件 |
 |---|---|
 | `solvers/nonlinear_types.py` | `petsc_solver_and_parallel_architecture_guideline_final.md`, `timestep_and_failure_policy_guideline_final_v2.md` |
-| `solvers/nonlinear_context.py` | `outer_inner_iteration_coupling_guideline_final.md`, `timestep_and_failure_policy_guideline_final_v2.md`, `unknowns_strategy_guideline_final.md`, `petsc_solver_and_parallel_architecture_guideline_final.md` |
+| `solvers/nonlinear_context.py` | `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`, `timestep_and_failure_policy_guideline_final_v2.md`, `unknowns_strategy_guideline_final.md`, `petsc_solver_and_parallel_architecture_guideline_final.md` |
 | `solvers/linesearch_guards.py` | `petsc_solver_and_parallel_architecture_guideline_final.md`, `diagnostics_and_conservation_monitoring_guideline_final.md`, `state_recovery_and_enthalpy_inversion_guideline_final.md`, `timestep_and_failure_policy_guideline_final_v2.md` |
 | `solvers/petsc_linear.py` | `petsc_solver_and_parallel_architecture_guideline_final.md` |
-| `solvers/petsc_snes.py` | `petsc_solver_and_parallel_architecture_guideline_final.md`, `timestep_and_failure_policy_guideline_final_v2.md`, `diagnostics_and_conservation_monitoring_guideline_final.md`, `outer_inner_iteration_coupling_guideline_final.md` |
-| `solvers/outer_predictor.py` | `outer_inner_iteration_coupling_guideline_final.md`, `paper_v1 Initialization and First-Step Guideline.md`, `timestep_and_failure_policy_guideline_final_v2.md` |
-| `solvers/outer_corrector.py` | `outer_inner_iteration_coupling_guideline_final.md`, `timestep_and_failure_policy_guideline_final_v2.md` |
-| `solvers/outer_convergence.py` | `outer_inner_iteration_coupling_guideline_final.md`, `diagnostics_and_conservation_monitoring_guideline_final.md`, `timestep_and_failure_policy_guideline_final_v2.md` |
-| `solvers/step_acceptance.py` | `timestep_and_failure_policy_guideline_final_v2.md`, `diagnostics_and_conservation_monitoring_guideline_final.md`, `outer_inner_iteration_coupling_guideline_final.md` |
-| `solvers/timestepper.py` | `outer_inner_iteration_coupling_guideline_final.md`, `timestep_and_failure_policy_guideline_final_v2.md`, `paper_v1 Initialization and First-Step Guideline.md`, `remap_and_conservative_projection_guideline_final_v2.md`, `state_recovery_and_enthalpy_inversion_guideline_final.md`, `velocity_recovery_guideline_final.md`, `petsc_solver_and_parallel_architecture_guideline_final.md`, `diagnostics_and_conservation_monitoring_guideline_final.md` |
+| `solvers/petsc_snes.py` | `petsc_solver_and_parallel_architecture_guideline_final.md`, `timestep_and_failure_policy_guideline_final_v2.md`, `diagnostics_and_conservation_monitoring_guideline_final.md`, `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md` |
+| `solvers/outer_predictor.py` | `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`, `paper_v1 Initialization and First-Step Guideline.md`, `timestep_and_failure_policy_guideline_final_v2.md` |
+| `solvers/outer_corrector.py` | `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`, `timestep_and_failure_policy_guideline_final_v2.md` |
+| `solvers/outer_convergence.py` | `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`, `diagnostics_and_conservation_monitoring_guideline_final.md`, `timestep_and_failure_policy_guideline_final_v2.md` |
+| `solvers/step_acceptance.py` | `timestep_and_failure_policy_guideline_final_v2.md`, `diagnostics_and_conservation_monitoring_guideline_final.md`, `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md` |
+| `solvers/timestepper.py` | `outer_inner_iteration_coupling_guideline_literature_aligned_v2.md`, `timestep_and_failure_policy_guideline_final_v2.md`, `paper_v1 Initialization and First-Step Guideline.md`, emap_and_conservative_projection_guideline_final_v2.md`, `state_recovery_and_enthalpy_inversion_guideline_final.md`, `velocity_recovery_guideline_final.md`, `petsc_solver_and_parallel_architecture_guideline_final.md`, `diagnostics_and_conservation_monitoring_guideline_final.md` |
 
 ---
 

@@ -595,7 +595,7 @@ PETSc 对 AIJ 预分配的重要性说得非常直接。([petsc.org][7])
 
 因为你已经定下了：
 
-* remap 的对象是 `rho V / rhoY V / rhoh V`
+* remap 的对象是 ho V / rhoY V / rhoh V`
 * 分相 remap
 * 不跨相 remap
 * 第三段固定区可直接复用

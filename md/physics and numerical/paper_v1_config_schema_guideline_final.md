@@ -39,7 +39,7 @@
 - 当前时间步的 `a^(k)`、`dot_a^(k)`
 - 当前 outer 轮的 `eps_dot_a`
 - 当前 accepted/rejected 状态
-- `old_state_on_current_geometry`
+- `old_state_on_current_geometry` / `U_init^(k)` / `U_transfer^(k->k+1)` ???????????
 - Jacobian 当前尺寸
 - 当前 rank 的局部范围
 - 当前 residual 的最大分量
@@ -143,11 +143,11 @@
 
 ### 典型例子
 - `a0`
-- `r_end`
+- _end`
 - `dt_start`
 - `dt_min`
 - `dt_max`
-- `retry_max_per_step`
+- etry_max_per_step`
 - `inner_max_iter`
 - `outer_max_iter`
 - `liquid_closure_species`
@@ -190,9 +190,9 @@
 ### 典型例子
 - `n_species_liquid_full`
 - `n_species_gas_full`
-- `reduced_to_full_map`
+- educed_to_full_map`
 - `active_interface_unknowns`
-- `region3_is_fixed`
+- egion3_is_fixed`
 - `field_offsets`
 - `layout_version`
 
@@ -281,7 +281,7 @@
 - `grid_cfg`
 - `unknowns_cfg`
 - `solver_cfg`
-- `recovery_cfg`
+- ecovery_cfg`
 - `diag_cfg`
 - `output_cfg`
 
@@ -502,7 +502,7 @@ validation:
 建议字段：
 
 * `a0`
-* `r_end`
+* _end`
 * `pressure`
 * `t_start`
 * `t_end`
@@ -524,7 +524,7 @@ validation:
 * `n_gas_outer`
 * `inner_gas_extent_factor`
 * `outer_grid_stretch_ratio`
-* `region3_fixed`
+* egion3_fixed`
 
 ---
 
@@ -559,7 +559,7 @@ validation:
 建议字段：
 
 * `species_database_path`
-* `reference_temperature`
+* eference_temperature`
 * `activity_model`
 * `latent_heat_model_policy`
 
@@ -607,7 +607,7 @@ validation:
 * `dt_start`
 * `dt_min`
 * `dt_max`
-* `retry_max_per_step`
+* etry_max_per_step`
 * `q_success_for_growth`
 
 ---
@@ -651,7 +651,7 @@ validation:
 
 ---
 
-## 7.11 `recovery`
+## 7.11 ecovery`
 
 职责：
 
@@ -659,7 +659,7 @@ validation:
 
 建议字段（必须显式配置）：
 
-* `rho_min`
+* ho_min`
 * `m_min`
 * `species_recovery_eps_abs`
 * `Y_sum_tol`
