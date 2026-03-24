@@ -79,7 +79,7 @@ solver_inner_petsc:
       ksp_type: preonly
       pc_type: lu
 recovery:
-  T_min_l: 200.0
+  T_min_l: 270.0
   T_max_l: 800.0
   T_min_g: 200.0
   T_max_g: 4000.0
