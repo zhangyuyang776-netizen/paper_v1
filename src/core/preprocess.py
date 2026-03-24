@@ -17,6 +17,9 @@ import numpy as np
 from .types import (
     CasePaths,
     DiagnosticsConfig,
+    FieldSplitBulkConfig,
+    FieldSplitConfig,
+    FieldSplitIfaceConfig,
     InitializationConfig,
     InnerSolverConfig,
     MeshConfig,
@@ -321,6 +324,74 @@ def _normalize_liquid_closure_name(
     return liquid_closure_name
 
 
+def _normalize_time_stepper_cfg(raw_ts: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "t0": float(raw_ts["t0"]),
+        "t_end": float(raw_ts["t_end"]),
+        "dt_start": float(raw_ts["dt_start"]),
+        "dt_min": float(raw_ts["dt_min"]),
+        "dt_max": float(raw_ts["dt_max"]),
+        "max_retries_per_step": int(raw_ts["max_retries_per_step"]),
+        "accept_growth_factor": float(raw_ts["accept_growth_factor"]),
+        "reject_shrink_factor": float(raw_ts["reject_shrink_factor"]),
+    }
+
+
+def _normalize_outer_stepper_cfg(raw_outer: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "outer_max_iter": int(raw_outer["outer_max_iter"]),
+        "predictor_mode": str(raw_outer["predictor_mode"]),
+        "corrector_mode": str(raw_outer["corrector_mode"]),
+        "omega_a": float(raw_outer["omega_a"]),
+        "omega_v": float(raw_outer["omega_v"]),
+        "outer_convergence_mode": str(raw_outer["outer_convergence_mode"]),
+        "outer_convergence_tol": float(raw_outer["outer_convergence_tol"]),
+        "eps_ref_dot_a": float(raw_outer["eps_ref_dot_a"]),
+    }
+
+
+def _normalize_inner_solver_cfg(raw_solver: Mapping[str, Any]) -> dict[str, Any]:
+    raw_fieldsplit = raw_solver["fieldsplit"]
+    raw_bulk = raw_fieldsplit["bulk"]
+    raw_iface = raw_fieldsplit["iface"]
+    return {
+        "snes_type": str(raw_solver["snes_type"]),
+        "linesearch_type": str(raw_solver["linesearch_type"]),
+        "snes_rtol": float(raw_solver["snes_rtol"]),
+        "snes_atol": float(raw_solver["snes_atol"]),
+        "snes_stol": float(raw_solver["snes_stol"]),
+        "snes_max_it": int(raw_solver["snes_max_it"]),
+        "options_prefix": str(raw_solver.get("options_prefix", "")),
+        "lag_jacobian": int(raw_solver["lag_jacobian"]),
+        "lag_preconditioner": int(raw_solver["lag_preconditioner"]),
+        "ksp_type": str(raw_solver["ksp_type"]),
+        "pc_type": str(raw_solver["pc_type"]),
+        "ksp_rtol": float(raw_solver["ksp_rtol"]),
+        "ksp_atol": float(raw_solver["ksp_atol"]),
+        "ksp_max_it": int(raw_solver["ksp_max_it"]),
+        "restart": int(raw_solver["restart"]),
+        "gmres_modified_gram_schmidt": bool(raw_solver["gmres_modified_gram_schmidt"]),
+        "gmres_preallocate": bool(raw_solver["gmres_preallocate"]),
+        "fieldsplit": FieldSplitConfig(
+            scheme=str(raw_fieldsplit["scheme"]),
+            type=str(raw_fieldsplit["type"]),
+            schur_fact_type=str(raw_fieldsplit["schur_fact_type"]),
+            schur_precondition=str(raw_fieldsplit["schur_precondition"]),
+            bulk=FieldSplitBulkConfig(
+                ksp_type=str(raw_bulk["ksp_type"]),
+                pc_type=str(raw_bulk["pc_type"]),
+                sub_ksp_type=str(raw_bulk["sub_ksp_type"]),
+                sub_pc_type=str(raw_bulk["sub_pc_type"]),
+                asm_overlap=int(raw_bulk["asm_overlap"]),
+            ),
+            iface=FieldSplitIfaceConfig(
+                ksp_type=str(raw_iface["ksp_type"]),
+                pc_type=str(raw_iface["pc_type"]),
+            ),
+        ),
+    }
+
+
 def _build_run_config(
     *,
     raw_cfg: Mapping[str, Any],
@@ -343,6 +414,10 @@ def _build_run_config(
         liquid_to_gas_species_map=dict(species_cfg["liquid_to_gas_species_map"]),
     )
 
+    time_stepper_cfg = _normalize_time_stepper_cfg(raw_cfg["time_stepper"])
+    outer_stepper_cfg = _normalize_outer_stepper_cfg(raw_cfg["outer_stepper"])
+    inner_solver_cfg = _normalize_inner_solver_cfg(raw_cfg["solver_inner_petsc"])
+
     return RunConfig(
         case_name=raw_cfg["case"]["name"],
         case_description=raw_cfg["case"].get("description"),
@@ -357,9 +432,9 @@ def _build_run_config(
         initialization=initialization,
         species=species_control,
         species_maps=species_maps,
-        time_stepper=TimeStepperConfig(**raw_cfg["time_stepper"]),
-        outer_stepper=OuterStepperConfig(**raw_cfg["outer_stepper"]),
-        inner_solver=InnerSolverConfig(**raw_cfg["solver_inner_petsc"]),
+        time_stepper=TimeStepperConfig(**time_stepper_cfg),
+        outer_stepper=OuterStepperConfig(**outer_stepper_cfg),
+        inner_solver=InnerSolverConfig(**inner_solver_cfg),
         recovery=RecoveryConfig(**raw_cfg["recovery"]),
         diagnostics=DiagnosticsConfig(**raw_cfg["diagnostics"]),
         output=OutputConfig(**raw_cfg["output"]),

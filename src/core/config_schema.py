@@ -186,10 +186,9 @@ def _build_time_stepper_schema() -> SchemaSection:
             SchemaField("dt_start", float, required=True, min_value=0.0),
             SchemaField("dt_min", float, required=True, min_value=0.0),
             SchemaField("dt_max", float, required=True, min_value=0.0),
-            SchemaField("retry_max_per_step", int, required=True, min_value=0),
-            SchemaField("q_success_for_growth", int, required=True, min_value=1),
-            SchemaField("growth_factor", float, required=True, min_value=1.0),
-            SchemaField("shrink_factor", float, required=True, min_value=0.0, max_value=1.0),
+            SchemaField("max_retries_per_step", int, required=True, min_value=0),
+            SchemaField("accept_growth_factor", float, required=True, min_value=1.0),
+            SchemaField("reject_shrink_factor", float, required=True, min_value=0.0, max_value=1.0),
         ),
     )
 
@@ -200,15 +199,31 @@ def _build_outer_stepper_schema() -> SchemaSection:
         required=True,
         fields=(
             SchemaField("outer_max_iter", int, required=True, min_value=1),
-            SchemaField("eps_dot_a_tol", float, required=True, min_value=0.0),
             SchemaField(
-                "corrector_relaxation",
-                float,
-                required=False,
-                allow_none=True,
-                min_value=0.0,
-                max_value=1.0,
+                "predictor_mode",
+                str,
+                required=True,
+                nonempty=True,
+                choices=("explicit_from_previous_dot_a",),
             ),
+            SchemaField(
+                "corrector_mode",
+                str,
+                required=True,
+                nonempty=True,
+                choices=("trapezoidal_fixed_point",),
+            ),
+            SchemaField("omega_a", float, required=True, min_value=0.0, max_value=1.0),
+            SchemaField("omega_v", float, required=True, min_value=0.0, max_value=1.0),
+            SchemaField(
+                "outer_convergence_mode",
+                str,
+                required=True,
+                nonempty=True,
+                choices=("eps_dot_a",),
+            ),
+            SchemaField("outer_convergence_tol", float, required=True, min_value=0.0),
+            SchemaField("eps_ref_dot_a", float, required=True, min_value=0.0),
         ),
     )
 
@@ -218,14 +233,30 @@ def _build_solver_inner_petsc_schema() -> SchemaSection:
         name="solver_inner_petsc",
         required=True,
         fields=(
-            SchemaField("inner_max_iter", int, required=True, min_value=1),
+            SchemaField("snes_type", str, required=True, nonempty=True, choices=("newtonls",)),
+            SchemaField("linesearch_type", str, required=True, nonempty=True, choices=("bt",)),
             SchemaField("snes_rtol", float, required=True, min_value=0.0),
             SchemaField("snes_atol", float, required=True, min_value=0.0),
             SchemaField("snes_stol", float, required=True, min_value=0.0),
+            SchemaField("snes_max_it", int, required=True, min_value=1),
+            SchemaField("options_prefix", str, required=True, allow_none=False),
+            SchemaField("lag_jacobian", int, required=True, min_value=-1),
+            SchemaField("lag_preconditioner", int, required=True, min_value=-1),
+            SchemaField("ksp_type", str, required=True, nonempty=True, choices=("fgmres", "gmres", "preonly")),
+            SchemaField(
+                "pc_type",
+                str,
+                required=True,
+                nonempty=True,
+                choices=("fieldsplit", "ilu", "lu", "asm", "jacobi", "none"),
+            ),
             SchemaField("ksp_rtol", float, required=True, min_value=0.0),
-            SchemaField("pc_type", str, required=True, nonempty=True),
-            SchemaField("ksp_type", str, required=True, nonempty=True),
-            SchemaField("use_fieldsplit", bool, required=True),
+            SchemaField("ksp_atol", float, required=True, min_value=0.0),
+            SchemaField("ksp_max_it", int, required=True, min_value=1),
+            SchemaField("restart", int, required=True, min_value=1),
+            SchemaField("gmres_modified_gram_schmidt", bool, required=True),
+            SchemaField("gmres_preallocate", bool, required=True),
+            SchemaField("fieldsplit", dict, required=True, nonempty=True),
         ),
     )
 
@@ -425,6 +456,102 @@ def _validate_fraction_mapping_sum_leq_one(
         )
 
 
+def _validate_time_stepper_section(raw_cfg: Mapping[str, Any]) -> None:
+    time_stepper = _expect_mapping("time_stepper", raw_cfg["time_stepper"])
+    if float(time_stepper["t_end"]) <= float(time_stepper["t0"]):
+        raise ConfigValidationError("t_end must be greater than t0")
+    if not (float(time_stepper["dt_min"]) < float(time_stepper["dt_start"]) <= float(time_stepper["dt_max"])):
+        raise ConfigValidationError("dt_min < dt_start <= dt_max must hold")
+    if float(time_stepper["dt_max"]) < float(time_stepper["dt_min"]):
+        raise ConfigValidationError("dt_max must be >= dt_min")
+    if float(time_stepper["accept_growth_factor"]) < 1.0:
+        raise ConfigValidationError("accept_growth_factor must be >= 1")
+    if not (0.0 < float(time_stepper["reject_shrink_factor"]) < 1.0):
+        raise ConfigValidationError("reject_shrink_factor must satisfy 0 < value < 1")
+
+
+def _validate_outer_stepper_section(raw_cfg: Mapping[str, Any]) -> None:
+    outer = _expect_mapping("outer_stepper", raw_cfg["outer_stepper"])
+    if not (0.0 < float(outer["omega_a"]) <= 1.0):
+        raise ConfigValidationError("omega_a must satisfy 0 < value <= 1")
+    if not (0.0 < float(outer["omega_v"]) <= 1.0):
+        raise ConfigValidationError("omega_v must satisfy 0 < value <= 1")
+    if float(outer["outer_convergence_tol"]) <= 0.0:
+        raise ConfigValidationError("outer_convergence_tol must be greater than 0")
+    if float(outer["eps_ref_dot_a"]) <= 0.0:
+        raise ConfigValidationError("eps_ref_dot_a must be greater than 0")
+
+
+def _validate_solver_inner_petsc_section(raw_cfg: Mapping[str, Any]) -> None:
+    solver = _expect_mapping("solver_inner_petsc", raw_cfg["solver_inner_petsc"])
+    if int(solver["lag_jacobian"]) < -1:
+        raise ConfigValidationError("lag_jacobian must be >= -1")
+    if int(solver["lag_preconditioner"]) < -1:
+        raise ConfigValidationError("lag_preconditioner must be >= -1")
+
+    fieldsplit = _expect_mapping("solver_inner_petsc.fieldsplit", solver["fieldsplit"])
+    allowed_fs_keys = {"scheme", "type", "schur_fact_type", "schur_precondition", "bulk", "iface"}
+    for key in fieldsplit:
+        if key not in allowed_fs_keys:
+            raise ConfigValidationError(f"Unknown field '{key}' in section 'solver_inner_petsc.fieldsplit'")
+    required_fs_keys = {"scheme", "type", "schur_fact_type", "schur_precondition", "bulk", "iface"}
+    for key in required_fs_keys:
+        if key not in fieldsplit:
+            raise ConfigValidationError(f"Missing required field '{key}' in section 'solver_inner_petsc.fieldsplit'")
+
+    if fieldsplit["scheme"] != "bulk_iface":
+        raise ConfigValidationError("solver_inner_petsc.fieldsplit.scheme must be 'bulk_iface'")
+    if fieldsplit["type"] not in {"schur", "additive", "multiplicative", "symmetric_multiplicative"}:
+        raise ConfigValidationError("solver_inner_petsc.fieldsplit.type is unsupported")
+    if fieldsplit["schur_fact_type"] != "full":
+        raise ConfigValidationError("solver_inner_petsc.fieldsplit.schur_fact_type must be 'full'")
+    if fieldsplit["schur_precondition"] != "a11":
+        raise ConfigValidationError("solver_inner_petsc.fieldsplit.schur_precondition must be 'a11'")
+
+    bulk = _expect_mapping("solver_inner_petsc.fieldsplit.bulk", fieldsplit["bulk"])
+    iface = _expect_mapping("solver_inner_petsc.fieldsplit.iface", fieldsplit["iface"])
+    required_bulk = {"ksp_type", "pc_type", "sub_ksp_type", "sub_pc_type", "asm_overlap"}
+    required_iface = {"ksp_type", "pc_type"}
+    for key in required_bulk:
+        if key not in bulk:
+            raise ConfigValidationError(
+                f"Missing required field '{key}' in section 'solver_inner_petsc.fieldsplit.bulk'"
+            )
+    for key in required_iface:
+        if key not in iface:
+            raise ConfigValidationError(
+                f"Missing required field '{key}' in section 'solver_inner_petsc.fieldsplit.iface'"
+            )
+    for field_name in ("ksp_type", "pc_type", "sub_ksp_type", "sub_pc_type"):
+        if not isinstance(bulk[field_name], str) or bulk[field_name].strip() == "":
+            raise ConfigValidationError(
+                f"Field '{field_name}' in section 'solver_inner_petsc.fieldsplit.bulk' must be a non-empty string"
+            )
+    for field_name in ("ksp_type", "pc_type"):
+        if not isinstance(iface[field_name], str) or iface[field_name].strip() == "":
+            raise ConfigValidationError(
+                f"Field '{field_name}' in section 'solver_inner_petsc.fieldsplit.iface' must be a non-empty string"
+            )
+    if bulk["ksp_type"] not in {"fgmres", "gmres", "preonly"}:
+        raise ConfigValidationError("solver_inner_petsc.fieldsplit.bulk.ksp_type is unsupported")
+    if bulk["pc_type"] not in {"asm", "ilu", "lu", "jacobi", "none", "fieldsplit"}:
+        raise ConfigValidationError("solver_inner_petsc.fieldsplit.bulk.pc_type is unsupported")
+    if bulk["sub_ksp_type"] not in {"fgmres", "gmres", "preonly"}:
+        raise ConfigValidationError("solver_inner_petsc.fieldsplit.bulk.sub_ksp_type is unsupported")
+    if bulk["sub_pc_type"] not in {"asm", "ilu", "lu", "jacobi", "none", "fieldsplit"}:
+        raise ConfigValidationError("solver_inner_petsc.fieldsplit.bulk.sub_pc_type is unsupported")
+    if iface["ksp_type"] not in {"fgmres", "gmres", "preonly"}:
+        raise ConfigValidationError("solver_inner_petsc.fieldsplit.iface.ksp_type is unsupported")
+    if iface["pc_type"] not in {"asm", "ilu", "lu", "jacobi", "none", "fieldsplit"}:
+        raise ConfigValidationError("solver_inner_petsc.fieldsplit.iface.pc_type is unsupported")
+    if isinstance(bulk["asm_overlap"], bool) or not isinstance(bulk["asm_overlap"], int):
+        raise ConfigValidationError(
+            "Field 'asm_overlap' in section 'solver_inner_petsc.fieldsplit.bulk' must be an integer"
+        )
+    if int(bulk["asm_overlap"]) < 0:
+        raise ConfigValidationError("solver_inner_petsc.fieldsplit.bulk.asm_overlap must be >= 0")
+
+
 def validate_cross_field_rules(raw_cfg: Mapping[str, Any]) -> None:
     mesh = _expect_mapping("mesh", raw_cfg["mesh"])
     if float(mesh["a0"]) <= 0.0:
@@ -432,18 +559,9 @@ def validate_cross_field_rules(raw_cfg: Mapping[str, Any]) -> None:
     if float(mesh["r_end"]) <= float(mesh["a0"]):
         raise ConfigValidationError("r_end must be greater than a0")
 
-    time_stepper = _expect_mapping("time_stepper", raw_cfg["time_stepper"])
-    if float(time_stepper["t_end"]) <= float(time_stepper["t0"]):
-        raise ConfigValidationError("t_end must be greater than t0")
-    if not (float(time_stepper["dt_min"]) < float(time_stepper["dt_start"]) <= float(time_stepper["dt_max"])):
-        raise ConfigValidationError("dt_min < dt_start <= dt_max must hold")
-    if not (0.0 < float(time_stepper["shrink_factor"]) <= 1.0):
-        raise ConfigValidationError("shrink_factor must satisfy 0 < value <= 1")
-
-    outer = _expect_mapping("outer_stepper", raw_cfg["outer_stepper"])
-    corrector_relaxation = outer.get("corrector_relaxation")
-    if corrector_relaxation is not None and not (0.0 < float(corrector_relaxation) <= 1.0):
-        raise ConfigValidationError("corrector_relaxation must satisfy 0 < value <= 1")
+    _validate_time_stepper_section(raw_cfg)
+    _validate_outer_stepper_section(raw_cfg)
+    _validate_solver_inner_petsc_section(raw_cfg)
 
     recovery = _expect_mapping("recovery", raw_cfg["recovery"])
     if float(recovery["T_max_l"]) <= float(recovery["T_min_l"]):

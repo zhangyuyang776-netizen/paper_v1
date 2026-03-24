@@ -217,10 +217,9 @@ class TimeStepperConfig:
     dt_start: float
     dt_min: float
     dt_max: float
-    retry_max_per_step: int
-    q_success_for_growth: int
-    growth_factor: float
-    shrink_factor: float
+    max_retries_per_step: int
+    accept_growth_factor: float
+    reject_shrink_factor: float
 
     def __post_init__(self) -> None:
         _check_positive("dt_min", self.dt_min)
@@ -230,13 +229,11 @@ class TimeStepperConfig:
             raise ValueError("Require dt_min < dt_start <= dt_max")
         if not np.isfinite(self.t0) or not np.isfinite(self.t_end) or self.t_end <= self.t0:
             raise ValueError("Require finite t0 and t_end > t0")
-        _check_nonnegative_int("retry_max_per_step", self.retry_max_per_step)
-        if self.q_success_for_growth <= 0:
-            raise ValueError("q_success_for_growth must be >= 1")
-        if not np.isfinite(self.growth_factor) or self.growth_factor < 1.0:
-            raise ValueError("growth_factor must be >= 1")
-        if not np.isfinite(self.shrink_factor) or not (0.0 < self.shrink_factor <= 1.0):
-            raise ValueError("shrink_factor must satisfy 0 < value <= 1")
+        _check_nonnegative_int("max_retries_per_step", self.max_retries_per_step)
+        if not np.isfinite(self.accept_growth_factor) or self.accept_growth_factor < 1.0:
+            raise ValueError("accept_growth_factor must be >= 1")
+        if not np.isfinite(self.reject_shrink_factor) or not (0.0 < self.reject_shrink_factor < 1.0):
+            raise ValueError("reject_shrink_factor must satisfy 0 < value < 1")
 
 
 @dataclass(slots=True, kw_only=True, frozen=True)
@@ -244,39 +241,140 @@ class OuterStepperConfig:
     """Outer predictor-corrector control parameters."""
 
     outer_max_iter: int
-    eps_dot_a_tol: float
-    corrector_relaxation: float | None = None
+    predictor_mode: str
+    corrector_mode: str
+    omega_a: float
+    omega_v: float
+    outer_convergence_mode: str
+    outer_convergence_tol: float
+    eps_ref_dot_a: float
 
     def __post_init__(self) -> None:
         if self.outer_max_iter < 1:
             raise ValueError("outer_max_iter must be >= 1")
-        _check_positive("eps_dot_a_tol", self.eps_dot_a_tol)
-        if self.corrector_relaxation is not None:
-            _check_positive("corrector_relaxation", self.corrector_relaxation)
-            if self.corrector_relaxation > 1.0:
-                raise ValueError("corrector_relaxation must be <= 1")
+        if self.predictor_mode != "explicit_from_previous_dot_a":
+            raise ValueError("predictor_mode must be 'explicit_from_previous_dot_a'")
+        if self.corrector_mode != "trapezoidal_fixed_point":
+            raise ValueError("corrector_mode must be 'trapezoidal_fixed_point'")
+        if self.outer_convergence_mode != "eps_dot_a":
+            raise ValueError("outer_convergence_mode must be 'eps_dot_a'")
+        _check_positive("omega_a", self.omega_a)
+        _check_positive("omega_v", self.omega_v)
+        if self.omega_a > 1.0:
+            raise ValueError("omega_a must be <= 1")
+        if self.omega_v > 1.0:
+            raise ValueError("omega_v must be <= 1")
+        _check_positive("outer_convergence_tol", self.outer_convergence_tol)
+        _check_positive("eps_ref_dot_a", self.eps_ref_dot_a)
+
+
+@dataclass(slots=True, kw_only=True, frozen=True)
+class FieldSplitBulkConfig:
+    """Normalized bulk fieldsplit sub-KSP configuration."""
+
+    ksp_type: str
+    pc_type: str
+    sub_ksp_type: str
+    sub_pc_type: str
+    asm_overlap: int
+
+    def __post_init__(self) -> None:
+        if not self.ksp_type:
+            raise ValueError("fieldsplit.bulk.ksp_type must be non-empty")
+        if not self.pc_type:
+            raise ValueError("fieldsplit.bulk.pc_type must be non-empty")
+        if not self.sub_ksp_type:
+            raise ValueError("fieldsplit.bulk.sub_ksp_type must be non-empty")
+        if not self.sub_pc_type:
+            raise ValueError("fieldsplit.bulk.sub_pc_type must be non-empty")
+        _check_nonnegative_int("fieldsplit.bulk.asm_overlap", self.asm_overlap)
+
+
+@dataclass(slots=True, kw_only=True, frozen=True)
+class FieldSplitIfaceConfig:
+    """Normalized interface fieldsplit sub-KSP configuration."""
+
+    ksp_type: str
+    pc_type: str
+
+    def __post_init__(self) -> None:
+        if not self.ksp_type:
+            raise ValueError("fieldsplit.iface.ksp_type must be non-empty")
+        if not self.pc_type:
+            raise ValueError("fieldsplit.iface.pc_type must be non-empty")
+
+
+@dataclass(slots=True, kw_only=True, frozen=True)
+class FieldSplitConfig:
+    """Normalized fieldsplit / Schur configuration."""
+
+    scheme: str
+    type: str
+    schur_fact_type: str
+    schur_precondition: str
+    bulk: FieldSplitBulkConfig
+    iface: FieldSplitIfaceConfig
+
+    def __post_init__(self) -> None:
+        if self.scheme != "bulk_iface":
+            raise ValueError("fieldsplit.scheme must be 'bulk_iface'")
+        if self.type not in {"schur", "additive", "multiplicative", "symmetric_multiplicative"}:
+            raise ValueError("fieldsplit.type is unsupported")
+        if self.schur_fact_type != "full":
+            raise ValueError("fieldsplit.schur_fact_type must be 'full'")
+        if self.schur_precondition != "a11":
+            raise ValueError("fieldsplit.schur_precondition must be 'a11'")
 
 
 @dataclass(slots=True, kw_only=True, frozen=True)
 class InnerSolverConfig:
     """Normalized inner nonlinear solver settings."""
 
-    inner_max_iter: int
+    snes_type: str
+    linesearch_type: str
     snes_rtol: float
     snes_atol: float
     snes_stol: float
-    ksp_rtol: float
-    pc_type: str
+    snes_max_it: int
+    options_prefix: str
+    lag_jacobian: int
+    lag_preconditioner: int
+
     ksp_type: str
-    use_fieldsplit: bool
+    pc_type: str
+    ksp_rtol: float
+    ksp_atol: float
+    ksp_max_it: int
+    restart: int
+    gmres_modified_gram_schmidt: bool
+    gmres_preallocate: bool
+
+    fieldsplit: FieldSplitConfig
 
     def __post_init__(self) -> None:
-        if self.inner_max_iter < 1:
-            raise ValueError("inner_max_iter must be >= 1")
+        if self.snes_type != "newtonls":
+            raise ValueError("snes_type must be 'newtonls'")
+        if self.linesearch_type != "bt":
+            raise ValueError("linesearch_type must be 'bt'")
         _check_nonnegative("snes_rtol", self.snes_rtol)
         _check_nonnegative("snes_atol", self.snes_atol)
         _check_nonnegative("snes_stol", self.snes_stol)
+        if self.snes_max_it < 1:
+            raise ValueError("snes_max_it must be >= 1")
+        if self.lag_jacobian < -1:
+            raise ValueError("lag_jacobian must be >= -1")
+        if self.lag_preconditioner < -1:
+            raise ValueError("lag_preconditioner must be >= -1")
+        if self.ksp_type not in {"fgmres", "gmres", "preonly"}:
+            raise ValueError("ksp_type is unsupported")
+        if self.pc_type not in {"fieldsplit", "asm", "ilu", "lu", "jacobi", "none"}:
+            raise ValueError("pc_type is unsupported")
         _check_nonnegative("ksp_rtol", self.ksp_rtol)
+        _check_nonnegative("ksp_atol", self.ksp_atol)
+        if self.ksp_max_it < 1:
+            raise ValueError("ksp_max_it must be >= 1")
+        if self.restart < 1:
+            raise ValueError("restart must be >= 1")
         if not self.pc_type:
             raise ValueError("pc_type must be non-empty")
         if not self.ksp_type:
@@ -875,76 +973,131 @@ class State:
         return replace(self, interface=interface_new)
 
 
-@dataclass(slots=True, kw_only=True)
+@dataclass(slots=True, kw_only=True, frozen=True)
 class Props:
     """Bulk cell-centered property results, without model handles."""
 
-    rho_l: FloatArray | None = None  # [kg/m^3], shape (n_liq_cells,)
-    cp_l: FloatArray | None = None  # [J/kg/K], shape (n_liq_cells,)
-    k_l: FloatArray | None = None  # [W/m/K], shape (n_liq_cells,)
-    mu_l: FloatArray | None = None  # [Pa*s], shape (n_liq_cells,)
-    Dl: FloatArray | None = None  # [m^2/s], shape (n_liq_cells, n_liq_species_full)
-    hl: FloatArray | None = None  # [J/kg], shape (n_liq_cells,)
-    rho_g: FloatArray | None = None  # [kg/m^3], shape (n_gas_cells,)
-    cp_g: FloatArray | None = None  # [J/kg/K], shape (n_gas_cells,)
-    k_g: FloatArray | None = None  # [W/m/K], shape (n_gas_cells,)
-    mu_g: FloatArray | None = None  # [Pa*s], shape (n_gas_cells,)
-    Dg: FloatArray | None = None  # [m^2/s], shape (n_gas_cells, n_gas_species_full)
-    hg: FloatArray | None = None  # [J/kg], shape (n_gas_cells,)
-    Xg_full: FloatArray | None = None  # [-], shape (n_gas_cells, n_gas_species_full)
+    rho_l: FloatArray
+    cp_l: FloatArray
+    h_l: FloatArray
+    k_l: FloatArray
+    mu_l: FloatArray
+    D_l: FloatArray | None
+
+    rho_g: FloatArray
+    cp_g: FloatArray
+    h_g: FloatArray
+    k_g: FloatArray
+    mu_g: FloatArray
+    D_g: FloatArray | None
+
+    diagnostics: dict[str, Any]
 
     def __post_init__(self) -> None:
-        self.rho_l = self._as_optional_float("rho_l", self.rho_l, ndim=1)
-        self.cp_l = self._as_optional_float("cp_l", self.cp_l, ndim=1)
-        self.k_l = self._as_optional_float("k_l", self.k_l, ndim=1)
-        self.mu_l = self._as_optional_float("mu_l", self.mu_l, ndim=1)
-        self.Dl = self._as_optional_float("Dl", self.Dl, ndim=2)
-        self.hl = self._as_optional_float("hl", self.hl, ndim=1)
-        self.rho_g = self._as_optional_float("rho_g", self.rho_g, ndim=1)
-        self.cp_g = self._as_optional_float("cp_g", self.cp_g, ndim=1)
-        self.k_g = self._as_optional_float("k_g", self.k_g, ndim=1)
-        self.mu_g = self._as_optional_float("mu_g", self.mu_g, ndim=1)
-        self.Dg = self._as_optional_float("Dg", self.Dg, ndim=2)
-        self.hg = self._as_optional_float("hg", self.hg, ndim=1)
-        self.Xg_full = self._as_optional_float("Xg_full", self.Xg_full, ndim=2)
+        rho_l = _as_float_array("rho_l", self.rho_l, ndim=1)
+        cp_l = _as_float_array("cp_l", self.cp_l, ndim=1)
+        h_l = _as_float_array("h_l", self.h_l, ndim=1)
+        k_l = _as_float_array("k_l", self.k_l, ndim=1)
+        mu_l = _as_float_array("mu_l", self.mu_l, ndim=1)
 
-        n_liq = self._infer_first_dim(self.rho_l, self.cp_l, self.k_l, self.mu_l, self.hl, self.Dl)
-        n_gas = self._infer_first_dim(self.rho_g, self.cp_g, self.k_g, self.mu_g, self.hg, self.Dg, self.Xg_full)
-        self._check_first_dim(n_liq, "rho_l", self.rho_l, "cp_l", self.cp_l, "k_l", self.k_l, "mu_l", self.mu_l, "hl", self.hl)
-        self._check_first_dim(n_gas, "rho_g", self.rho_g, "cp_g", self.cp_g, "k_g", self.k_g, "mu_g", self.mu_g, "hg", self.hg)
-        if self.Dl is not None and n_liq is not None and self.Dl.shape[0] != n_liq:
-            raise ValueError("Dl first dimension must match liquid cell count")
-        if self.Dg is not None and n_gas is not None and self.Dg.shape[0] != n_gas:
-            raise ValueError("Dg first dimension must match gas cell count")
-        if self.Xg_full is not None and n_gas is not None and self.Xg_full.shape[0] != n_gas:
-            raise ValueError("Xg_full first dimension must match gas cell count")
-        if self.Dg is not None and self.Xg_full is not None and self.Dg.shape != self.Xg_full.shape:
-            raise ValueError("Dg and Xg_full must have the same shape when both are provided")
+        rho_g = _as_float_array("rho_g", self.rho_g, ndim=1)
+        cp_g = _as_float_array("cp_g", self.cp_g, ndim=1)
+        h_g = _as_float_array("h_g", self.h_g, ndim=1)
+        k_g = _as_float_array("k_g", self.k_g, ndim=1)
+        mu_g = _as_float_array("mu_g", self.mu_g, ndim=1)
 
-    @staticmethod
-    def _as_optional_float(name: str, value: FloatArray | None, *, ndim: int) -> FloatArray | None:
-        if value is None:
-            return None
-        arr = _as_float_array(name, value, ndim=ndim)
-        _check_all_finite(name, arr)
-        return arr
+        _check_all_finite("rho_l", rho_l)
+        _check_all_finite("cp_l", cp_l)
+        _check_all_finite("h_l", h_l)
+        _check_all_finite("k_l", k_l)
+        _check_all_finite("mu_l", mu_l)
+        _check_all_finite("rho_g", rho_g)
+        _check_all_finite("cp_g", cp_g)
+        _check_all_finite("h_g", h_g)
+        _check_all_finite("k_g", k_g)
+        _check_all_finite("mu_g", mu_g)
 
-    @staticmethod
-    def _infer_first_dim(*arrays: FloatArray | None) -> int | None:
-        for arr in arrays:
-            if arr is not None:
-                return int(arr.shape[0])
-        return None
+        _check_same_length("rho_l", rho_l, "cp_l", cp_l)
+        _check_same_length("rho_l", rho_l, "h_l", h_l)
+        _check_same_length("rho_l", rho_l, "k_l", k_l)
+        _check_same_length("rho_l", rho_l, "mu_l", mu_l)
 
-    @staticmethod
-    def _check_first_dim(expected: int | None, *pairs: str | FloatArray | None) -> None:
-        if expected is None:
-            return
-        for idx in range(0, len(pairs), 2):
-            name = pairs[idx]
-            arr = pairs[idx + 1]
-            if arr is not None and arr.shape[0] != expected:
-                raise ValueError(f"{name} first dimension must be {expected}")
+        _check_same_length("rho_g", rho_g, "cp_g", cp_g)
+        _check_same_length("rho_g", rho_g, "h_g", h_g)
+        _check_same_length("rho_g", rho_g, "k_g", k_g)
+        _check_same_length("rho_g", rho_g, "mu_g", mu_g)
+
+        if np.any(rho_l <= 0.0):
+            raise ValueError("rho_l must be strictly positive")
+        if np.any(cp_l <= 0.0):
+            raise ValueError("cp_l must be strictly positive")
+        if np.any(k_l <= 0.0):
+            raise ValueError("k_l must be strictly positive")
+        if np.any(mu_l <= 0.0):
+            raise ValueError("mu_l must be strictly positive")
+
+        if np.any(rho_g <= 0.0):
+            raise ValueError("rho_g must be strictly positive")
+        if np.any(cp_g <= 0.0):
+            raise ValueError("cp_g must be strictly positive")
+        if np.any(k_g <= 0.0):
+            raise ValueError("k_g must be strictly positive")
+        if np.any(mu_g <= 0.0):
+            raise ValueError("mu_g must be strictly positive")
+
+        object.__setattr__(self, "rho_l", rho_l)
+        object.__setattr__(self, "cp_l", cp_l)
+        object.__setattr__(self, "h_l", h_l)
+        object.__setattr__(self, "k_l", k_l)
+        object.__setattr__(self, "mu_l", mu_l)
+        object.__setattr__(self, "rho_g", rho_g)
+        object.__setattr__(self, "cp_g", cp_g)
+        object.__setattr__(self, "h_g", h_g)
+        object.__setattr__(self, "k_g", k_g)
+        object.__setattr__(self, "mu_g", mu_g)
+
+        if self.D_l is not None:
+            D_l = _as_float_array("D_l", self.D_l, ndim=2)
+            _check_all_finite("D_l", D_l)
+            if np.any(D_l <= 0.0):
+                raise ValueError("D_l must be strictly positive")
+            _check_array_row_count("D_l", D_l, rho_l.shape[0])
+            object.__setattr__(self, "D_l", D_l)
+
+        if self.D_g is not None:
+            D_g = _as_float_array("D_g", self.D_g, ndim=2)
+            _check_all_finite("D_g", D_g)
+            if np.any(D_g <= 0.0):
+                raise ValueError("D_g must be strictly positive")
+            _check_array_row_count("D_g", D_g, rho_g.shape[0])
+            object.__setattr__(self, "D_g", D_g)
+
+        if not isinstance(self.diagnostics, dict):
+            raise TypeError("diagnostics must be a dict")
+
+    @property
+    def hl(self) -> FloatArray:
+        return self.h_l
+
+    @property
+    def hg(self) -> FloatArray:
+        return self.h_g
+
+    @property
+    def Dl(self) -> FloatArray | None:
+        return self.D_l
+
+    @property
+    def Dg(self) -> FloatArray | None:
+        return self.D_g
+
+    @property
+    def has_liquid_diffusion(self) -> bool:
+        return self.D_l is not None
+
+    @property
+    def has_gas_diffusion(self) -> bool:
+        return self.D_g is not None
 
 
 @dataclass(slots=True, kw_only=True)
@@ -1049,6 +1202,9 @@ __all__ = [
     "ConservativeContents",
     "ControlSurfaceMetrics",
     "DiagnosticsConfig",
+    "FieldSplitBulkConfig",
+    "FieldSplitConfig",
+    "FieldSplitIfaceConfig",
     "FloatArray",
     "GeometryState",
     "InitializationConfig",
