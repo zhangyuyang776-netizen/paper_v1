@@ -3,7 +3,7 @@
 **审查日期**：2026-03-24
 **审查范围**：`src/core/` 全部 9 个模块
 **参照文档**：`md/physics and numerical/` 下全部指导文件
-**审查结论总览**：发现 9 处偏差，其中 3 处为算法级严重简化，4 处为中等功能缺失，2 处为轻微结构偏差。
+**审查结论总览**：发现 11 处偏差，其中 2 处为算法级严重问题，7 处为中等功能缺失，2 处为轻微结构偏差。（本报告为修订版：初版 S-1 误判已撤销，S-2/S-3 已更正，新增 S-6/S-7/S-8 三项。）
 
 ---
 
@@ -13,13 +13,13 @@
 |------|---------|---------|
 | `grid.py` | 三区网格构建、控制面速度 | **一致** |
 | `remap.py` | 保守量重映射 | **2 处偏差** |
-| `state_recovery.py` | 守恒量→原始态恢复 | **6 处偏差** |
+| `state_recovery.py` | 守恒量→原始态恢复 | **7 处偏差** |
 | `layout.py` | 未知量向量布局 | **1 处偏差（Phase B）** |
 | `state_pack.py` | 状态向量打包/解包 | **一致** |
 | `types.py` | 数据结构定义 | **1 处缺项** |
 | `preprocess.py` | 配置归一化 | **1 处轻微缺失** |
 | `config_loader.py` | YAML 加载与 schema 校验 | **一致** |
-| `config_schema.py` | 配置 schema 约束 | **一致** |
+| `config_schema.py` | 配置 schema 约束 | **1 处关联缺项** |
 
 ---
 
@@ -91,70 +91,61 @@ remap_enthalpy_err_gas
 
 ---
 
-## 四、`state_recovery.py` — 发现 6 处偏差
+## 四、`state_recovery.py` — 发现 7 处偏差
 
 参照：`state_recovery_and_enthalpy_inversion_guideline_final.md`
 
-### 偏差 S-1【严重】焓反演算法：纯二分法，缺少 Newton 保险步
-
-**指导文件规定（§液相焓反演）：**
-> 使用 **Safeguarded Newton with Bisection Fallback**：
-> 1. Newton 步：`T_new = T − f(T)/f'(T)`，其中 `f'(T) = c_p(T,Y)`
-> 2. 若 Newton 步越出区间或导数异常，降级为二分
-> 3. 每步同时更新区间端点收紧范围
-
-**代码实现（`_invert_temperature_monotone_bisection`，L81-117）：**
-```python
-for _ in range(max_iter):
-    mid = 0.5 * (left + right)   # 始终二分，无 Newton 步
-    h_mid = float(thermo.enthalpy_mass(mid, y_full))
-    if abs(h_mid - target_h) <= tol:
-        return mid
-    if h_mid < target_h:
-        left = mid
-    else:
-        right = mid
-```
-
-**影响**：纯二分法收敛率 O(log₂N)，Newton 法在良好条件下二阶收敛。50 次迭代、温区 [270, 350] 时精度约 7×10⁻¹⁴ K，可满足当前精度需求，但在宽温区或多组分场景下迭代代价更高。
+> **修订说明（2026-03-24）**：初版报告 S-1、S-2 两项结论经核查存在误判，本版本予以更正。初版将辅助函数 `_invert_temperature_monotone_bisection` 误认为主调用路径；实际主路径为液相 `_invert_liquid_h_to_T_safeguarded → _invert_temperature_safeguarded_newton`、气相 `_invert_gas_h_to_T_hpy_first`，两者均已实现 Newton 保险步与 HPY 优先分支。原初版 S-1（纯二分法）结论撤销；S-2 更正为接口设计层面的准确描述。此外，S-3 关于"每次从区间中点开始"的表述不准确，一并修正。新增偏差 S-6/S-7/S-8。
 
 ---
 
-### 偏差 S-2【严重】气相焓反演：未实现 Cantera HPY 主方法
+### ~~偏差 S-1【已撤销】焓反演算法：纯二分法，缺少 Newton 保险步~~
 
-**指导文件规定（§气相焓反演）：**
-> 主方法：Cantera HPY setter，`gas.HPY = h_target, P_inf, Y_full; T = gas.T`
-> 失败时降级为 Newton/二分备选
-
-**代码实现（`_invert_gas_h_to_T`，L147-171）：**
-```python
-# 与液相完全相同的纯二分实现，未调用任何 Cantera HPY 接口
-return np.array([
-    _invert_temperature_monotone_bisection(
-        T_low=recovery_cfg.T_min_g,
-        T_high=recovery_cfg.T_max_g,
-        ...
-    ) for ...
-])
-```
-
-**影响**：配置项 `use_cantera_hpy_first: true` 被读取存储但**从不使用**，形成"死配置"；Cantera HPY 对多组分气相的收敛性和数值精度均优于纯二分法。
+> **该项为误判，已撤销。**
+>
+> 初版引用 `_invert_temperature_monotone_bisection`（L217-253）作为主路径。经复核，此函数是存在但**未被主路径调用**的辅助函数。实际运行路径为：
+> - **液相**：`_recover_liquid_phase_state_with_diagnostics` → `_invert_liquid_h_to_T_safeguarded` → `_invert_temperature_safeguarded_newton`，已实现 Newton 步 + 二分 fallback + 区间收紧。
+> - **气相**：`_recover_gas_phase_state_with_diagnostics` → `_invert_gas_h_to_T_hpy_first` → 内部同样调用 `_invert_temperature_safeguarded_newton` 作为 fallback。
+>
+> 算法实现与指导文件一致，本项不计入偏差。
 
 ---
 
-### 偏差 S-3【中等】无历史温度初始猜值
+### 偏差 S-1【中等】气相 HPY 主线：接口缺显式 P_inf，依赖 thermo 对象隐式属性
+
+（替换初版错误结论"HPY 主方法未实现 / 死配置"）
+
+**实际实现情况**：`_invert_gas_h_to_T_hpy_first` 已正确实现 HPY-first 分支，`use_cantera_hpy_first` 被真正检查并触发 `_call_temperature_from_hpy`；Newton + 二分 fallback 也已实现。HPY 分支并非"死配置"。
+
+**真正的问题（`_infer_gas_recovery_pressure`）：**
+```python
+def _infer_gas_recovery_pressure(gas_thermo: GasThermoProtocol) -> float | None:
+    reference_pressure = getattr(gas_thermo, "reference_pressure", None)
+    if reference_pressure is None:
+        return None   # → HPY 被静默跳过，记 skipped_reason="missing_reference_pressure"
+```
+
+`recover_state_from_contents` 签名不含显式 `P_inf` 参数，系统压力靠 thermo 对象的隐式属性 `reference_pressure` 推断。只要调用方传入的 thermo 对象未挂载该属性，HPY 主线便静默降级，调用方无感知。
+
+**影响**：HPY 主线的激活与否取决于 thermo 对象实现细节，而非恢复模块的显式接口合同，违反指导文件"显式稳定主路径"要求，增加接口脆弱性。
+
+---
+
+### 偏差 S-2【中等】焓反演初始猜值：仅 sweep 内相邻格传递，缺时间层历史温度
+
+（修正初版"每次从区间中点开始搜索"的不准确表述）
 
 **指导文件规定（§初始猜值优先级）：**
-1. `T_0 = T_prev`（上一时间层温度）
+1. `T_0 = T_prev`（**上一时间步**的温度场）
 2. 线性估算：`T_0 = T_ref + (h_target − h(T_ref)) / c_p(T_ref)`，钳位至区间内
 
-**代码**：纯二分法无需也未使用任何初始猜值，每次从区间中点开始搜索。
+**实际实现**：代码中 `T_hint` 确实存在并被传入反演函数，但其来源是**当前 sweep 内相邻格**（即空间邻格插值），而非上一时间步保存的历史温度 `T_prev`。时间层历史温度在 API 层面根本未作为参数传入（见偏差 S-8）。
 
-**影响**：在时间步之间解变化缓慢时，未利用历史信息，无谓消耗迭代次数。
+**影响**：相邻格 T_hint 有助于空间平滑情形，但在时间步间温度变化显著（如初始瞬态）时，无法利用真正的历史信息加速收敛。
 
 ---
 
-### 偏差 S-4【中等】缺少组分守恒轻微偏差的修正规则
+### 偏差 S-3【中等】缺少组分守恒轻微偏差的修正规则
 
 **指导文件规定（§最小修正规则）：**
 1. 若 `|ρY_i| < ε_abs`，钳位为零
@@ -171,7 +162,7 @@ if np.any(species_mass < 0.0):
 
 ---
 
-### 偏差 S-5【中等】缺少反演后前向一致性校验
+### 偏差 S-4【中等】缺少反演后前向一致性校验
 
 **指导文件规定（§后验一致性检查）：**
 ```
@@ -185,7 +176,7 @@ h_recomputed = h(T_recovered, Y)
 
 ---
 
-### 偏差 S-6【中等】气相摩尔分数 `Xg_full` 恒为 None
+### 偏差 S-5【中等】气相摩尔分数 `Xg_full` 恒为 None
 
 **指导文件规定（§气相恢复输出，Hard 要求）：**
 > 气相恢复必须同时输出 `Yg_full`（质量分数）和 `Xg_full`（摩尔分数），
@@ -215,6 +206,54 @@ state = State(
 | 前向一致性 | `\|h_recomputed − h_target\|` | 未检查（同 S-5）|
 
 `summarize_recovery_diagnostics`（L277-285）仅返回 6 个量（`min/max_Tl`, `min/max_Tg`, `min_rho_l`, `min_rho_g`），指导文件要求约 20 个诊断量（各相反演迭代次数、残差、前向误差、修正次数等）。
+
+---
+
+### 偏差 S-6【严重，结构问题】`RecoveryConfig` 缺少指导文件要求的多项阈值参数
+
+**指导文件规定（§恢复配置合同）**中明确要求以下参数必须可配置：
+
+| 参数 | 用途 | 当前 `RecoveryConfig` |
+|------|------|----------------------|
+| `h_check_tol` | 前向一致性校验容差（偏差 S-4 所需）| **缺失** |
+| `Y_sum_tol` | 组分归一化修正阈值（偏差 S-3 所需）| **缺失** |
+| `rho_min_l` / `rho_min_g` | 密度下界检查（补充节所需）| **缺失** |
+| `Y_neg_clip_tol` | 负质量分数钳位阈值（偏差 S-3 所需）| **缺失** |
+| `newton_max_iter` / `bisection_max_iter` | 反演迭代上限 | **缺失** |
+
+**代码现状**：`RecoveryConfig` 仅包含温度区间 `T_min_l/g`、`T_max_l/g` 以及 `use_cantera_hpy_first` 布尔开关，阈值参数被硬编码在各反演函数内部。
+
+**影响**：缺失参数使偏差 S-3、S-4 的修正规则在结构层面**无法实现**（即便写了修正逻辑，阈值也无处注入）；同时 `config_schema.py` 的 recovery 块 schema 也随之不完整（见第九节）。此项是 S-3/S-4 修复的结构前置条件，优先级最高。
+
+---
+
+### 偏差 S-7【中等】`recover_state_from_contents` public API 丢弃 recovery diagnostics
+
+**指导文件规定（§恢复接口合同）：**
+> 公共接口应同时返回 `State` 和 `RecoveryDiagnostics`，后者包含各相迭代次数、残差、前向误差、修正标志等，供上层做定量监控和日志。
+
+**代码实现**：内部函数 `_recover_liquid_phase_state_with_diagnostics` 和 `_recover_gas_phase_state_with_diagnostics` 已生成详细的每格诊断对象，但 `recover_state_from_contents`（公共入口）仅将诊断传入 `summarize_recovery_diagnostics` 做聚合摘要后再丢弃，返回值只有 `State`。
+
+**影响**：上层调用方无法获取细粒度诊断（如某格迭代超限、某格 HPY 被跳过），诊断能力被锁死在模块内部，与 `remap.py` 的诊断设计模式不一致。
+
+---
+
+### 偏差 S-8【中等】API 缺显式 `T_prev` 参数，历史温度优先策略接口合同缺失
+
+**指导文件规定（§初始猜值优先级）：**
+> 恢复接口须接受 `T_prev`（上一时间步温度场数组）作为可选参数，作为最优先的初始猜值来源。
+
+**代码实现**：`recover_state_from_contents` 签名为：
+```python
+def recover_state_from_contents(
+    contents: ConservedContents,
+    thermo: ...,
+    recovery_cfg: RecoveryConfig,
+) -> State:
+```
+无 `T_prev` 参数。偏差 S-2 中提到的"相邻格 T_hint"是 sweep 内的空间传递，并非时间层历史温度。
+
+**影响**：即使在 `_invert_temperature_safeguarded_newton` 内部增加对时间历史猜值的支持，在当前 API 合同下也无任何通道将 `T_prev` 注入，S-2 的修复在结构层面被此缺陷阻塞。
 
 ---
 
@@ -296,35 +335,51 @@ return vector   # 未检查 Σ Y_i ≈ 1.0
 
 ---
 
-## 九、`config_loader.py` / `config_schema.py` — 一致 ✓
+## 九、`config_loader.py` / `config_schema.py`
 
-两者均为纯基础设施代码，无物理/数值内容，与指导文件架构规范一致。
+`config_loader.py` 为纯基础设施代码，与架构规范一致 ✓。
+
+`config_schema.py` 存在一处关联缺项：
+
+### 偏差 CS-1【轻微，关联缺项】recovery 配置块 schema 缺少阈值参数约束
+
+**现状**：`config_schema.py` 中 `recovery` 块的 schema 仅约束 `T_min_l`、`T_max_l`、`T_min_g`、`T_max_g`、`use_cantera_hpy_first`，与 `RecoveryConfig` 的现有字段保持一致。
+
+**影响**：偏差 S-6 要求在 `RecoveryConfig` 中新增的 `h_check_tol`、`Y_sum_tol`、`rho_min_l/g`、`Y_neg_clip_tol` 等参数，需同步在此 schema 中添加约束（类型、范围、默认值），否则配置文件中的对应字段将被 schema 校验拒绝。此项是 **S-6 修复的联动后置步骤**，S-6 完成后须同步处理。
 
 ---
 
 ## 十、偏差汇总与优先级
 
+> **说明**：初版 S-1（纯二分）为误判，已撤销，不计入下表。S-2/S-3 为更正后的描述。S-6/S-7/S-8/CS-1 为新增项。
+
 | 编号 | 文件 | 严重性 | 描述 | 修复依赖 |
 |------|------|--------|------|---------|
 | R-1 | `remap.py:287-314` | **严重** | 新暴露体积用端格代替界面态（ρ_{s,l}^n, h_{s,l}^n）| 先补 T-1 |
-| S-1 | `state_recovery.py:81-117` | **严重** | 焓反演仅纯二分，无 Newton 保险步 | 独立 |
-| S-2 | `state_recovery.py:147-171` | **严重** | 气相反演未实现 Cantera HPY 主方法（死配置项）| 独立 |
-| S-3 | `state_recovery.py:130-144` | 中等 | 无历史温度初始猜值 | 独立 |
-| S-4 | `state_recovery.py:54-61` | 中等 | 无组分轻微偏差修正，直接报错 | 独立 |
-| S-5 | `state_recovery.py:256-273` | 中等 | 缺前向一致性校验 h_recomputed vs h_target | 独立 |
-| S-6 | `state_recovery.py:269` | 中等 | Xg_full 恒为 None，气相摩尔分数未恢复 | 独立 |
+| S-6 | `state_recovery.py` | **严重（结构）** | `RecoveryConfig` 缺 `h_check_tol`/`Y_sum_tol`/`rho_min` 等阈值参数 | 独立 |
+| S-1 | `state_recovery.py` | 中等 | 气相 HPY 主线依赖 thermo 隐式属性 `reference_pressure`，缺显式 `P_inf` 接口 | 独立 |
+| S-2 | `state_recovery.py` | 中等 | 焓反演初始猜值仅为 sweep 内相邻格，缺时间层 `T_prev` | 先补 S-8 |
+| S-3 | `state_recovery.py` | 中等 | 无组分轻微偏差修正规则，直接抛异常 | 先补 S-6 |
+| S-4 | `state_recovery.py:256-273` | 中等 | 缺前向一致性校验 h_recomputed vs h_target | 先补 S-6 |
+| S-5 | `state_recovery.py:269` | 中等 | `Xg_full` 恒为 None，气相摩尔分数未恢复 | 独立 |
+| S-7 | `state_recovery.py` | 中等 | public API `recover_state_from_contents` 丢弃 recovery diagnostics | 独立 |
+| S-8 | `state_recovery.py` | 中等 | API 签名缺显式 `T_prev` 参数，历史温度优先策略无法注入 | 独立 |
 | R-2 | `remap.py:366-383` | 轻微 | 诊断仅报绝对值，未计算相对守恒误差 | 独立 |
 | L-1 | `layout.py:303-307` | 轻微 | Phase B 界面块 Y_{s,l} 排末尾而非 T_s 之前 | 独立 |
-| T-1 | `types.py:868-888` | 轻微（根因）| InterfaceState 缺 hs_l/hs_g 字段 | — |
+| T-1 | `types.py:868-888` | 轻微（根因）| `InterfaceState` 缺 `hs_l`/`hs_g` 字段 | — |
 | P-1 | `preprocess.py:265-278` | 轻微 | 初始 Y 向量未校验 Σ=1 | 独立 |
+| CS-1 | `config_schema.py` | 轻微（联动）| recovery schema 缺新增阈值参数约束 | 先补 S-6 |
 
 ### 推荐修复顺序
 
-1. **T-1**：在 `InterfaceState` 补充 `hs_l`、`hs_g`（为 R-1 解锁）
-2. **R-1**：remap 新暴露体积改用界面态而非端格
-3. **S-2**：实现 Cantera HPY 主方法，激活已有配置项
-4. **S-1**：液相/气相焓反演改为 Safeguarded Newton + 二分 fallback
-5. **S-6**：气相恢复后计算并填充 `Xg_full`
-6. **S-5**：反演后添加前向一致性校验
-7. **S-3**、**S-4**：初始猜值与组分修正规则（可同步实现）
-8. **R-2**、**P-1**、**L-1**：轻微修复，随版本迭代补充
+1. **S-6**：补全 `RecoveryConfig` 阈值参数组（解锁 S-3/S-4 修复）
+2. **CS-1**：同步在 `config_schema.py` recovery 块中添加对应 schema 约束
+3. **T-1**：在 `InterfaceState` 补充 `hs_l`、`hs_g`（解锁 R-1）
+4. **R-1**：remap 新暴露体积改用界面态而非端格
+5. **S-8**：`recover_state_from_contents` 签名添加 `T_prev` 可选参数（解锁 S-2 修复）
+6. **S-1**：将 P_inf 作为显式参数纳入 recovery API，消除对 thermo 隐式属性的依赖
+7. **S-7**：public API 返回值改为 `(State, RecoveryDiagnostics)`
+8. **S-5**：气相恢复后计算并填充 `Xg_full`
+9. **S-4**：反演后添加前向一致性校验
+10. **S-3**、**S-2**：组分修正规则与历史温度初始猜值（可同步实现）
+11. **R-2**、**P-1**、**L-1**：轻微修复，随版本迭代补充
