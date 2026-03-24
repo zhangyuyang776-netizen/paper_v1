@@ -2,7 +2,17 @@ from __future__ import annotations
 
 import numpy as np
 
-from .types import ConservativeContents, GeometryState, Mesh1D, OldStateOnCurrentGeometry, RecoveryConfig, SpeciesMaps, State
+from .types import (
+    ConservativeContents,
+    GeometryState,
+    InterfaceState,
+    Mesh1D,
+    OldStateOnCurrentGeometry,
+    RecoveryConfig,
+    SpeciesMaps,
+    State,
+    StateTransferRecord,
+)
 from .state_recovery import GasThermoProtocol, LiquidThermoProtocol
 
 
@@ -12,7 +22,7 @@ def _missing_recovery(*args, **kwargs):
 
 try:  # pragma: no cover - exercised indirectly once state_recovery exists
     from .state_recovery import recover_state_from_contents
-except ImportError:  # pragma: no cover - current phase provides this via monkeypatch in tests
+except ImportError:  # pragma: no cover
     recover_state_from_contents = _missing_recovery
 
 
@@ -20,7 +30,7 @@ OVERLAP_RTOL = 1.0e-12
 
 
 class RemapError(ValueError):
-    """Raised when conservative remap between old and current geometry cannot be completed safely."""
+    """Raised when conservative transfer between two geometries cannot be completed safely."""
 
 
 def _gas_local_slice(mesh: Mesh1D, region_slice: slice) -> slice:
@@ -33,8 +43,6 @@ def _faces_for_region(mesh: Mesh1D, region_slice: slice) -> np.ndarray:
 
 
 def _build_old_conservative_contents(old_state: State, old_mesh: Mesh1D) -> ConservativeContents:
-    # Formal paper_v1 rule:
-    # remap acts on conservative cell contents, not on primitive state variables.
     required = (
         ("rho_l", old_state.rho_l),
         ("rho_g", old_state.rho_g),
@@ -96,7 +104,6 @@ def _compute_overlap_matrix_spherical(old_faces: np.ndarray, new_faces: np.ndarr
     n_old = old_faces.size - 1
     n_new = new_faces.size - 1
     overlap = np.zeros((n_old, n_new), dtype=np.float64)
-
     for i_old in range(n_old):
         for j_new in range(n_new):
             left = max(old_faces[i_old], new_faces[j_new])
@@ -104,7 +111,6 @@ def _compute_overlap_matrix_spherical(old_faces: np.ndarray, new_faces: np.ndarr
             if right <= left:
                 continue
             overlap[i_old, j_new] = _spherical_shell_volume(left, right)
-
     return overlap
 
 
@@ -122,7 +128,7 @@ def _remap_phase_contents_from_overlap(
     old_cell_volumes = np.asarray(old_cell_volumes, dtype=np.float64)
     overlap_matrix = np.asarray(overlap_matrix, dtype=np.float64)
 
-    n_old, n_new = overlap_matrix.shape
+    n_old, _n_new = overlap_matrix.shape
     if old_mass.shape != (n_old,):
         raise RemapError("old_mass shape must match overlap old-cell dimension")
     if old_enthalpy.shape != (n_old,):
@@ -175,14 +181,10 @@ def _complete_newly_exposed_subvolume_liquid(
     reference_h: float,
     tol: float,
 ) -> None:
-    # Engineering rule:
-    # uncovered new-cell volume after overlap projection is explicitly completed
-    # using a near-interface reference state from the corresponding phase.
     if reference_rho <= 0.0 or not np.isfinite(reference_rho):
         raise RemapError("liquid completion reference_rho must be finite and > 0")
     if not np.isfinite(reference_h):
         raise RemapError("liquid completion reference_h must be finite")
-
     for j_new, vol in enumerate(uncovered_volume):
         if vol <= tol:
             continue
@@ -206,7 +208,6 @@ def _complete_newly_exposed_subvolume_gas_near(
         raise RemapError("gas completion reference_rho must be finite and > 0")
     if not np.isfinite(reference_h):
         raise RemapError("gas completion reference_h must be finite")
-
     for j_new, vol in enumerate(uncovered_volume):
         if vol <= tol:
             continue
@@ -220,8 +221,6 @@ def _identity_copy_region3_gas_contents(
     old_mesh: Mesh1D,
     new_mesh: Mesh1D,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    # Formal paper_v1 rule:
-    # gas region-3 is fixed in space and therefore remap degenerates to identity there.
     old_far_faces = _faces_for_region(old_mesh, old_mesh.region_slices.gas_far)
     new_far_faces = _faces_for_region(new_mesh, new_mesh.region_slices.gas_far)
     if not np.array_equal(old_far_faces, new_far_faces):
@@ -239,6 +238,19 @@ def _identity_copy_region3_gas_contents(
     )
 
 
+def _extract_liquid_completion_reference(old_state: State) -> tuple[float, np.ndarray, float]:
+    if old_state.rho_l is None or old_state.hl is None:
+        raise RemapError("liquid completion requires old_state.rho_l and old_state.hl")
+    return float(old_state.rho_l[-1]), np.asarray(old_state.Yl_full[-1, :], dtype=np.float64), float(old_state.hl[-1])
+
+
+def _extract_gas_near_completion_reference(old_state: State, old_mesh: Mesh1D) -> tuple[float, np.ndarray, float]:
+    _ = old_mesh
+    if old_state.rho_g is None or old_state.hg is None:
+        raise RemapError("gas completion requires old_state.rho_g and old_state.hg")
+    return float(old_state.rho_g[0]), np.asarray(old_state.Yg_full[0, :], dtype=np.float64), float(old_state.hg[0])
+
+
 def _assemble_new_conservative_contents(
     *,
     liquid_part: tuple[np.ndarray, np.ndarray, np.ndarray],
@@ -248,7 +260,6 @@ def _assemble_new_conservative_contents(
     mass_l, species_mass_l, enthalpy_l = liquid_part
     mass_g_near, species_mass_g_near, enthalpy_g_near = gas_near_part
     mass_g_far, species_mass_g_far, enthalpy_g_far = gas_far_part
-
     return ConservativeContents(
         mass_l=mass_l,
         species_mass_l=species_mass_l,
@@ -259,7 +270,7 @@ def _assemble_new_conservative_contents(
     )
 
 
-def build_old_contents_on_current_geometry(
+def _build_transferred_contents(
     *,
     old_state: State,
     old_mesh: Mesh1D,
@@ -279,19 +290,19 @@ def build_old_contents_on_current_geometry(
     )
     liq_uncovered = _compute_uncovered_new_volume(new_liq_faces, liq_overlap)
     liq_scale = max(float(np.max(new_mesh.volumes[new_mesh.region_slices.liq])), 1.0e-30)
+    liq_rho_ref, liq_y_ref, liq_h_ref = _extract_liquid_completion_reference(old_state)
     _complete_newly_exposed_subvolume_liquid(
         new_mass=liquid_part[0],
         new_species_mass=liquid_part[1],
         new_enthalpy=liquid_part[2],
         uncovered_volume=liq_uncovered,
-        reference_rho=float(old_state.rho_l[-1]),
-        reference_y_full=old_state.Yl_full[-1, :],
-        reference_h=float(old_state.hl[-1]),
+        reference_rho=liq_rho_ref,
+        reference_y_full=liq_y_ref,
+        reference_h=liq_h_ref,
         tol=OVERLAP_RTOL * liq_scale,
     )
 
     old_gas_near_local = _gas_local_slice(old_mesh, old_mesh.region_slices.gas_near)
-    new_gas_near_local = _gas_local_slice(new_mesh, new_mesh.region_slices.gas_near)
     old_gas_near_faces = _faces_for_region(old_mesh, old_mesh.region_slices.gas_near)
     new_gas_near_faces = _faces_for_region(new_mesh, new_mesh.region_slices.gas_near)
     gas_near_overlap = _compute_overlap_matrix_spherical(old_gas_near_faces, new_gas_near_faces)
@@ -304,14 +315,15 @@ def build_old_contents_on_current_geometry(
     )
     gas_near_uncovered = _compute_uncovered_new_volume(new_gas_near_faces, gas_near_overlap)
     gas_near_scale = max(float(np.max(new_mesh.volumes[new_mesh.region_slices.gas_near])), 1.0e-30)
+    gas_rho_ref, gas_y_ref, gas_h_ref = _extract_gas_near_completion_reference(old_state, old_mesh)
     _complete_newly_exposed_subvolume_gas_near(
         new_mass=gas_near_part[0],
         new_species_mass=gas_near_part[1],
         new_enthalpy=gas_near_part[2],
         uncovered_volume=gas_near_uncovered,
-        reference_rho=float(old_state.rho_g[0]),
-        reference_y_full=old_state.Yg_full[0, :],
-        reference_h=float(old_state.hg[0]),
+        reference_rho=gas_rho_ref,
+        reference_y_full=gas_y_ref,
+        reference_h=gas_h_ref,
         tol=OVERLAP_RTOL * gas_near_scale,
     )
 
@@ -320,6 +332,157 @@ def build_old_contents_on_current_geometry(
         liquid_part=liquid_part,
         gas_near_part=gas_near_part,
         gas_far_part=gas_far_part,
+    )
+
+
+def build_old_contents_on_current_geometry(
+    *,
+    old_state: State,
+    old_mesh: Mesh1D,
+    new_mesh: Mesh1D,
+) -> ConservativeContents:
+    return _build_transferred_contents(old_state=old_state, old_mesh=old_mesh, new_mesh=new_mesh)
+
+
+def _recover_transferred_state(
+    *,
+    contents: ConservativeContents,
+    new_mesh: Mesh1D,
+    geometry_new: GeometryState,
+    old_state: State,
+    recovery_config: RecoveryConfig,
+    species_maps: SpeciesMaps,
+    liquid_thermo: LiquidThermoProtocol,
+    gas_thermo: GasThermoProtocol,
+) -> State:
+    try:
+        return recover_state_from_contents(
+            contents=contents,
+            mesh=new_mesh,
+            species_maps=species_maps,
+            recovery_config=recovery_config,
+            liquid_thermo=liquid_thermo,
+            gas_thermo=gas_thermo,
+            interface_seed=old_state.interface,
+            time=geometry_new.t,
+            state_id=old_state.state_id,
+        )
+    except NotImplementedError as exc:  # pragma: no cover
+        raise RemapError("state recovery is not available for remap finalization") from exc
+    except Exception as exc:
+        if isinstance(exc, RemapError):
+            raise
+        raise RemapError(str(exc)) from exc
+
+
+def _build_transfer_record(
+    *,
+    contents: ConservativeContents,
+    state: State,
+    geometry_new: GeometryState,
+    new_mesh: Mesh1D,
+    source_outer_iter_index: int | None,
+    identity_transfer: bool,
+) -> StateTransferRecord:
+    return StateTransferRecord(
+        contents=contents,
+        state=state,
+        geometry=geometry_new,
+        mesh=new_mesh,
+        source_outer_iter_index=source_outer_iter_index,
+        identity_transfer=identity_transfer,
+    )
+
+
+def _copy_interface_for_identity_transfer(interface: object) -> object:
+    if isinstance(interface, InterfaceState):
+        return InterfaceState(
+            Ts=float(interface.Ts),
+            mpp=float(interface.mpp),
+            Ys_g_full=np.array(interface.Ys_g_full, dtype=np.float64, copy=True),
+            Ys_l_full=np.array(interface.Ys_l_full, dtype=np.float64, copy=True),
+        )
+    return interface
+
+
+def _copy_state_for_identity_transfer(old_state: State) -> State:
+    return State(
+        Tl=np.array(old_state.Tl, dtype=np.float64, copy=True),
+        Yl_full=np.array(old_state.Yl_full, dtype=np.float64, copy=True),
+        Tg=np.array(old_state.Tg, dtype=np.float64, copy=True),
+        Yg_full=np.array(old_state.Yg_full, dtype=np.float64, copy=True),
+        interface=_copy_interface_for_identity_transfer(old_state.interface),
+        rho_l=None if old_state.rho_l is None else np.array(old_state.rho_l, dtype=np.float64, copy=True),
+        rho_g=None if old_state.rho_g is None else np.array(old_state.rho_g, dtype=np.float64, copy=True),
+        hl=None if old_state.hl is None else np.array(old_state.hl, dtype=np.float64, copy=True),
+        hg=None if old_state.hg is None else np.array(old_state.hg, dtype=np.float64, copy=True),
+        Xg_full=None if old_state.Xg_full is None else np.array(old_state.Xg_full, dtype=np.float64, copy=True),
+        time=old_state.time,
+        state_id=old_state.state_id,
+    )
+
+
+def _build_identity_transfer_record(
+    *,
+    old_state: State,
+    old_mesh: Mesh1D,
+    geometry_new: GeometryState,
+    source_outer_iter_index: int | None = None,
+) -> StateTransferRecord:
+    contents = _build_old_conservative_contents(old_state, old_mesh)
+    state = _copy_state_for_identity_transfer(old_state)
+    return _build_transfer_record(
+        contents=contents,
+        state=state,
+        geometry_new=geometry_new,
+        new_mesh=old_mesh,
+        source_outer_iter_index=source_outer_iter_index,
+        identity_transfer=True,
+    )
+
+
+def build_transfer_state_on_new_geometry(
+    *,
+    old_state: State,
+    old_mesh: Mesh1D,
+    new_mesh: Mesh1D,
+    geometry_new: GeometryState,
+    recovery_config: RecoveryConfig,
+    species_maps: SpeciesMaps,
+    liquid_thermo: LiquidThermoProtocol,
+    gas_thermo: GasThermoProtocol,
+    source_outer_iter_index: int | None = None,
+) -> StateTransferRecord:
+    if old_mesh.same_geometry(new_mesh):
+        return _build_identity_transfer_record(
+            old_state=old_state,
+            old_mesh=old_mesh,
+            geometry_new=geometry_new,
+            source_outer_iter_index=source_outer_iter_index,
+        )
+
+    contents = _build_transferred_contents(
+        old_state=old_state,
+        old_mesh=old_mesh,
+        new_mesh=new_mesh,
+    )
+    state = _recover_transferred_state(
+        contents=contents,
+        new_mesh=new_mesh,
+        geometry_new=geometry_new,
+        old_state=old_state,
+        recovery_config=recovery_config,
+        species_maps=species_maps,
+        liquid_thermo=liquid_thermo,
+        gas_thermo=gas_thermo,
+    )
+    return _build_transfer_record(
+        contents=contents,
+        state=state,
+        geometry_new=geometry_new,
+        new_mesh=new_mesh,
+        source_outer_iter_index=source_outer_iter_index,
+        identity_transfer=False,
     )
 
 
@@ -334,32 +497,20 @@ def build_old_state_on_current_geometry(
     liquid_thermo: LiquidThermoProtocol,
     gas_thermo: GasThermoProtocol,
 ) -> OldStateOnCurrentGeometry:
-    contents = build_old_contents_on_current_geometry(
+    """Compatibility wrapper for the legacy old-state/current-geometry name.
+
+    New transfer mainline should use ``build_transfer_state_on_new_geometry``.
+    """
+
+    return build_transfer_state_on_new_geometry(
         old_state=old_state,
         old_mesh=old_mesh,
         new_mesh=new_mesh,
-    )
-
-    try:
-        recovered_state = recover_state_from_contents(
-            contents=contents,
-            mesh=new_mesh,
-            species_maps=species_maps,
-            recovery_config=recovery_config,
-            liquid_thermo=liquid_thermo,
-            gas_thermo=gas_thermo,
-            interface_seed=old_state.interface,
-            time=geometry.t,
-            state_id=old_state.state_id,
-        )
-    except NotImplementedError as exc:  # pragma: no cover - covered by monkeypatch in tests
-        raise RemapError("state recovery is not available for remap finalization") from exc
-
-    return OldStateOnCurrentGeometry(
-        contents=contents,
-        state=recovered_state,
-        geometry=geometry,
-        mesh=new_mesh,
+        geometry_new=geometry,
+        recovery_config=recovery_config,
+        species_maps=species_maps,
+        liquid_thermo=liquid_thermo,
+        gas_thermo=gas_thermo,
     )
 
 
@@ -383,9 +534,29 @@ def summarize_remap_diagnostics(
     }
 
 
+def summarize_transfer_diagnostics(
+    *,
+    old_contents: ConservativeContents,
+    new_contents: ConservativeContents,
+    old_mesh: Mesh1D,
+    new_mesh: Mesh1D,
+    identity_transfer: bool,
+) -> dict[str, float | bool]:
+    return {
+        "identity_transfer": bool(identity_transfer),
+        "old_n_liq": int(old_mesh.n_liq),
+        "new_n_liq": int(new_mesh.n_liq),
+        "old_n_gas": int(old_mesh.n_gas),
+        "new_n_gas": int(new_mesh.n_gas),
+        **summarize_remap_diagnostics(old_contents, new_contents),
+    }
+
+
 __all__ = [
     "RemapError",
     "build_old_contents_on_current_geometry",
     "build_old_state_on_current_geometry",
+    "build_transfer_state_on_new_geometry",
     "summarize_remap_diagnostics",
+    "summarize_transfer_diagnostics",
 ]

@@ -1139,39 +1139,110 @@ class ConservativeContents:
         return int(self.mass_g.shape[0])
 
 
+def _check_mesh_state_consistency(*, mesh: "Mesh1D", state: "State", contents: "ConservativeContents") -> None:
+    if contents.n_liq_cells != state.n_liq_cells:
+        raise ValueError("Liquid cell count mismatch between contents and state")
+    if contents.n_gas_cells != state.n_gas_cells:
+        raise ValueError("Gas cell count mismatch between contents and state")
+    if mesh.n_liq != state.n_liq_cells:
+        raise ValueError("mesh.n_liq must match state.n_liq_cells")
+    if mesh.n_gas != state.n_gas_cells:
+        raise ValueError("mesh.n_gas must match state.n_gas_cells")
+
+
 @dataclass(slots=True, kw_only=True)
-class OldStateOnCurrentGeometry:
-    """Formal old-state object used by the fixed-geometry inner solve."""
+class StateTransferRecord:
+    """Current-geometry state-transfer record for one inner-entry contract.
+
+    This is the formal type for the Phase A transition contract.
+    ``OldStateOnCurrentGeometry`` is retained as a compatibility alias for
+    pre-migration code paths.
+    """
 
     contents: ConservativeContents
     state: State
     geometry: GeometryState
     mesh: Mesh1D
+    source_outer_iter_index: int | None = None
+    identity_transfer: bool = False
 
     def __post_init__(self) -> None:
-        if self.contents.n_liq_cells != self.state.n_liq_cells:
-            raise ValueError("Liquid cell count mismatch between contents and state")
-        if self.contents.n_gas_cells != self.state.n_gas_cells:
-            raise ValueError("Gas cell count mismatch between contents and state")
-        if self.mesh.n_liq != self.state.n_liq_cells:
-            raise ValueError("mesh.n_liq must match state.n_liq_cells")
-        if self.mesh.n_gas != self.state.n_gas_cells:
-            raise ValueError("mesh.n_gas must match state.n_gas_cells")
+        _check_mesh_state_consistency(mesh=self.mesh, state=self.state, contents=self.contents)
+        if self.source_outer_iter_index is not None:
+            _check_nonnegative_int("source_outer_iter_index", self.source_outer_iter_index)
 
 
-@dataclass(slots=True, kw_only=True)
+OldStateOnCurrentGeometry = StateTransferRecord
+
+
+@dataclass(slots=True, kw_only=True, init=False)
 class OuterIterState:
     """Frozen geometry snapshot for one outer predictor-corrector iteration."""
 
     geometry: GeometryState
     mesh: Mesh1D
-    old_state_current_geom: OldStateOnCurrentGeometry | None
+    entry_state: State | None = None
+    entry_transfer: StateTransferRecord | None = None
+    entry_source: str | None = None
     predicted_from_accepted: bool
 
+    def __init__(
+        self,
+        *,
+        geometry: GeometryState,
+        mesh: Mesh1D,
+        entry_state: State | None = None,
+        entry_transfer: StateTransferRecord | None = None,
+        entry_source: str | None = None,
+        predicted_from_accepted: bool,
+        old_state_current_geom: StateTransferRecord | None = None,
+    ) -> None:
+        if entry_transfer is not None and old_state_current_geom is not None and entry_transfer is not old_state_current_geom:
+            raise ValueError("entry_transfer and old_state_current_geom must refer to the same transfer record")
+        self.geometry = geometry
+        self.mesh = mesh
+        self.entry_state = entry_state
+        self.entry_transfer = entry_transfer if entry_transfer is not None else old_state_current_geom
+        self.entry_source = entry_source
+        self.predicted_from_accepted = predicted_from_accepted
+        self.__post_init__()
+
+    @staticmethod
+    def _normalize_entry_source(
+        *,
+        entry_source: str | None,
+        entry_transfer: StateTransferRecord | None,
+    ) -> str:
+        if entry_source is None:
+            return "transfer_from_previous_outer" if entry_transfer is not None else "accepted_time_level"
+        if entry_source not in ("accepted_time_level", "transfer_from_previous_outer"):
+            raise ValueError("entry_source must be 'accepted_time_level' or 'transfer_from_previous_outer'")
+        return entry_source
+
     def __post_init__(self) -> None:
-        if self.old_state_current_geom is not None:
-            if not self.old_state_current_geom.mesh.same_geometry(self.mesh):
-                raise ValueError("old_state_current_geom.mesh must match current outer mesh exactly")
+        self.entry_source = self._normalize_entry_source(
+            entry_source=self.entry_source,
+            entry_transfer=self.entry_transfer,
+        )
+        if self.entry_transfer is not None and not self.entry_transfer.mesh.same_geometry(self.mesh):
+            raise ValueError("entry_transfer.mesh must match current outer mesh exactly")
+        if self.entry_source == "accepted_time_level":
+            if self.entry_transfer is not None:
+                raise ValueError("accepted_time_level entry must not carry entry_transfer")
+        else:
+            if self.entry_transfer is None:
+                raise ValueError("transfer_from_previous_outer entry must provide entry_transfer")
+        if self.entry_state is not None:
+            if self.mesh.n_liq != self.entry_state.n_liq_cells:
+                raise ValueError("entry_state liquid cell count must match mesh.n_liq")
+            if self.mesh.n_gas != self.entry_state.n_gas_cells:
+                raise ValueError("entry_state gas cell count must match mesh.n_gas")
+
+    @property
+    def old_state_current_geom(self) -> StateTransferRecord | None:
+        """Read-only compatibility alias for ``entry_transfer``."""
+
+        return self.entry_transfer
 
 
 @dataclass(slots=True, kw_only=True)
@@ -1195,6 +1266,18 @@ class StepContext:
             raise ValueError("accepted_mesh.n_liq must match accepted_state.n_liq_cells")
         if self.accepted_mesh.n_gas != self.accepted_state.n_gas_cells:
             raise ValueError("accepted_mesh.n_gas must match accepted_state.n_gas_cells")
+
+    @property
+    def accepted_state_n(self) -> State:
+        return self.accepted_state
+
+    @property
+    def accepted_geometry_n(self) -> GeometryState:
+        return self.accepted_geometry
+
+    @property
+    def accepted_mesh_n(self) -> Mesh1D:
+        return self.accepted_mesh
 
 
 __all__ = [
@@ -1224,6 +1307,7 @@ __all__ = [
     "RunConfig",
     "SpeciesControlConfig",
     "SpeciesMaps",
+    "StateTransferRecord",
     "State",
     "StepContext",
     "TimeStepperConfig",

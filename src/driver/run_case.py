@@ -555,17 +555,25 @@ def _current_interface_log_fields(runtime: RuntimeEVP, *, geometry: object | Non
 
 
 def _step_result_log_fields(step_result: object) -> dict[str, Any]:
+    diagnostics = getattr(step_result, "diagnostics", None)
+    if not isinstance(diagnostics, Mapping):
+        diagnostics = {}
+    acceptance = getattr(step_result, "acceptance", None)
+    failure = getattr(step_result, "failure", None)
+    outer_iterations = getattr(step_result, "outer_iterations", None)
     fields: dict[str, Any] = {
         "retries_used": _retry_id_from_step_result(step_result),
-        "outer_iterations": len(getattr(step_result, "outer_iterations", ()) or ()),
-        "failure_class": getattr(getattr(getattr(step_result, "failure", None), "failure_class", None), "value", None),
-        "reject_reason": getattr(getattr(step_result, "acceptance", None), "reject_reason", None),
+        "outer_iterations": len(outer_iterations or ()),
+        "outer_iter_count": diagnostics.get("outer_iter_count"),
+        "outer_converged": diagnostics.get("outer_converged"),
+        "entry_source_first_outer": diagnostics.get("entry_source_first_outer"),
+        "failure_class": getattr(getattr(failure, "failure_class", None), "value", None),
+        "reject_reason": getattr(acceptance, "reject_reason", None),
         "nonlinear_n_iter": None,
         "nonlinear_residual_inf": None,
         "snes_reason": None,
         "ksp_reason": None,
     }
-    outer_iterations = getattr(step_result, "outer_iterations", None)
     if not outer_iterations:
         return fields
     last_outer = outer_iterations[-1]
@@ -718,8 +726,11 @@ def _run_step_loop(
             step_id=step_id,
             t_old=float(runtime.t),
             dt=float(dt_current),
-            accepted_state_old=runtime.state,
-            accepted_geometry_old=geometry_old,
+            accepted_state=runtime.state,
+            accepted_geometry=geometry_old,
+            accepted_mesh=runtime.grid,
+            accepted_layout=runtime.layout,
+            accepted_props=runtime.props,
             dot_a_old=float(dot_a_prev),
             models=models,
             parallel_handles=runtime.parallel_handles if isinstance(runtime.parallel_handles, dict) else None,
@@ -730,7 +741,11 @@ def _run_step_loop(
 
         if not bool(getattr(step_result, "accepted", False)):
             runtime.counters.n_failures_total += 1
-            runtime.last_message = str(getattr(step_result.acceptance, "reject_reason", "") or getattr(step_result.failure, "message", "") or "step rejected")
+            runtime.last_message = str(
+                getattr(getattr(step_result, "acceptance", None), "reject_reason", "")
+                or getattr(getattr(step_result, "failure", None), "message", "")
+                or "step rejected"
+            )
             _write_step_failure(
                 cfg,
                 runtime=runtime,
@@ -741,9 +756,11 @@ def _run_step_loop(
             return 1
 
         accepted_geometry = getattr(step_result, "accepted_geometry", None)
-        accepted_state_vec = getattr(step_result, "accepted_state_vec", None)
+        accepted_state_vec = getattr(step_result, "accepted_solution_vec", None)
+        if accepted_state_vec is None:
+            accepted_state_vec = getattr(step_result, "accepted_state_vec", None)
         if accepted_geometry is None or accepted_state_vec is None:
-            raise ValueError("accepted step must provide accepted_geometry and accepted_state_vec")
+            raise ValueError("accepted step must provide accepted_geometry and accepted_solution_vec")
 
         grid_new, _ = build_grid_and_metrics(cfg, accepted_geometry)
         layout_new = build_layout(cfg, grid_new)
