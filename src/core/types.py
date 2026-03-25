@@ -1327,6 +1327,14 @@ class RecoveryTemperatureSeeds:
     T_l: FloatArray | None = None
     T_g: FloatArray | None = None
 
+    def __post_init__(self) -> None:
+        for name, arr in (("T_l", self.T_l), ("T_g", self.T_g)):
+            if arr is not None:
+                a = np.asarray(arr, dtype=np.float64)
+                if a.ndim != 1:
+                    raise ValueError(f"RecoveryTemperatureSeeds.{name} must be 1-D, got ndim={a.ndim}")
+                object.__setattr__(self, name, a)
+
 
 @dataclass(slots=True, kw_only=True, frozen=True)
 class StateRecoveryResult:

@@ -199,16 +199,20 @@ def test_recover_specific_enthalpy() -> None:
 def test_recover_full_mass_fractions_multicomponent() -> None:
     mass = np.array([2.0, 4.0], dtype=np.float64)
     species_mass = np.array([[0.5, 1.5], [1.0, 3.0]], dtype=np.float64)
-    Y = _recover_full_mass_fractions(species_mass, mass, n_full=2, species_recovery_eps_abs=1.0e-14)
+    Y, _ = _recover_full_mass_fractions(
+        species_mass, mass, n_full=2, species_recovery_eps_abs=1.0e-14,
+        m_min=1.0e-20, Y_sum_tol=1.0e-10, Y_hard_tol=1.0e-6,
+    )
     assert np.allclose(Y, np.array([[0.25, 0.75], [0.25, 0.75]]))
 
 
 def test_recover_full_mass_fractions_single_component_liquid() -> None:
     mass = np.array([2.0, 4.0], dtype=np.float64)
     species_mass = np.array([[2.0], [4.0]], dtype=np.float64)
-    Y = _recover_full_mass_fractions(
+    Y, _ = _recover_full_mass_fractions(
         species_mass, mass, n_full=1, single_component_name="ethanol",
         species_recovery_eps_abs=1.0e-14,
+        m_min=1.0e-20, Y_sum_tol=1.0e-10, Y_hard_tol=1.0e-6,
     )
     assert np.allclose(Y, np.ones((2, 1)))
 
@@ -353,6 +357,7 @@ def test_recover_mass_fractions_rejects_species_mass_sum_mismatch() -> None:
             np.array([1.0], dtype=np.float64),
             n_full=2,
             species_recovery_eps_abs=1.0e-14,
+            m_min=1.0e-20, Y_sum_tol=1.0e-10, Y_hard_tol=1.0e-6,
         )
 
 
@@ -387,6 +392,7 @@ def test_recovery_does_not_renormalize_species_mass() -> None:
             np.array([1.0], dtype=np.float64),
             n_full=2,
             species_recovery_eps_abs=1.0e-14,
+            m_min=1.0e-20, Y_sum_tol=1.0e-10, Y_hard_tol=1.0e-6,
         )
 
 

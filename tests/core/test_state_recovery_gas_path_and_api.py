@@ -6,6 +6,7 @@ import pytest
 from core.state_recovery import (
     StateRecoveryError,
     _invert_gas_h_to_T_hpy_first,
+    _select_initial_temperature_guess,
     recover_state_from_contents,
     recover_state_from_contents_detailed,
     summarize_recovery_diagnostics,
@@ -163,7 +164,7 @@ def test_gas_hpy_path_taken_and_forward_check_passes() -> None:
     h_target = thermo.enthalpy_mass(T_target, np.array([0.79, 0.21]))
     y_full = np.array([0.79, 0.21])
 
-    T, mode, bounds, skipped = _invert_gas_h_to_T_hpy_first(
+    T, mode, bounds, skipped, h_fwd_err = _invert_gas_h_to_T_hpy_first(
         target_h=h_target,
         y_full=y_full,
         recovery_cfg=cfg,
@@ -173,6 +174,7 @@ def test_gas_hpy_path_taken_and_forward_check_passes() -> None:
     assert mode == "hpy"
     assert skipped is None
     assert abs(T - T_target) < 1e-6
+    assert h_fwd_err < 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +204,7 @@ def test_gas_hpy_check_failure_falls_back_to_newton() -> None:
     h_target = thermo.enthalpy_mass(T_target, np.array([0.79, 0.21]))
     y_full = np.array([0.79, 0.21])
 
-    T, mode, bounds, skipped = _invert_gas_h_to_T_hpy_first(
+    T, mode, bounds, skipped, h_fwd_err = _invert_gas_h_to_T_hpy_first(
         target_h=h_target,
         y_full=y_full,
         recovery_cfg=cfg,
@@ -212,6 +214,7 @@ def test_gas_hpy_check_failure_falls_back_to_newton() -> None:
     assert skipped == "hpy_check_failed"
     assert mode == "fallback_scalar"
     assert abs(T - T_target) < 1e-4
+    assert h_fwd_err < 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +229,7 @@ def test_gas_missing_pressure_falls_back_to_newton() -> None:
     h_target = thermo.enthalpy_mass(T_target, np.array([0.79, 0.21]))
     y_full = np.array([0.79, 0.21])
 
-    T, mode, bounds, skipped = _invert_gas_h_to_T_hpy_first(
+    T, mode, bounds, skipped, h_fwd_err = _invert_gas_h_to_T_hpy_first(
         target_h=h_target,
         y_full=y_full,
         recovery_cfg=cfg,
@@ -236,6 +239,7 @@ def test_gas_missing_pressure_falls_back_to_newton() -> None:
     assert mode == "fallback_scalar"
     assert skipped == "missing_reference_pressure"
     assert abs(T - T_target) < 1e-6
+    assert h_fwd_err < 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -449,3 +453,225 @@ def test_detailed_api_with_temperature_seeds() -> None:
     )
     np.testing.assert_allclose(result.state.Tl, T_l, atol=1e-5)
     np.testing.assert_allclose(result.state.Tg, T_g, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# Case 8: S-1 strict gas_pressure validation
+# ---------------------------------------------------------------------------
+
+def test_detailed_api_rejects_nonfinite_gas_pressure() -> None:
+    n_liq, n_gas = 1, 1
+    mesh = make_mesh(n_liq, n_gas)
+    species_maps = make_species_maps()
+    contents = make_contents(n_liq, n_gas, 2000.0, 1005.0,
+                             np.array([300.0]), np.array([900.0]))
+    cfg = make_recovery_cfg()
+
+    class SimpleLiqThermo:
+        def __init__(self, cp: float) -> None:
+            self.cp = cp
+        def enthalpy_mass(self, T: float, Y_full: np.ndarray) -> float:
+            return self.cp * float(T)
+        def cp_mass(self, T: float, Y_full: np.ndarray) -> float:
+            return self.cp
+
+    with pytest.raises(StateRecoveryError, match="gas_pressure"):
+        recover_state_from_contents_detailed(
+            contents=contents,
+            mesh=mesh,
+            species_maps=species_maps,
+            recovery_cfg=cfg,
+            liquid_thermo=SimpleLiqThermo(2000.0),
+            gas_thermo=HPYThermo(cp=1005.0),
+            interface_seed=make_interface(species_maps),
+            gas_pressure=float("nan"),
+        )
+
+
+def test_detailed_api_rejects_negative_gas_pressure() -> None:
+    n_liq, n_gas = 1, 1
+    mesh = make_mesh(n_liq, n_gas)
+    species_maps = make_species_maps()
+    contents = make_contents(n_liq, n_gas, 2000.0, 1005.0,
+                             np.array([300.0]), np.array([900.0]))
+    cfg = make_recovery_cfg()
+
+    class SimpleLiqThermo:
+        def __init__(self, cp: float) -> None:
+            self.cp = cp
+        def enthalpy_mass(self, T: float, Y_full: np.ndarray) -> float:
+            return self.cp * float(T)
+        def cp_mass(self, T: float, Y_full: np.ndarray) -> float:
+            return self.cp
+
+    with pytest.raises(StateRecoveryError, match="gas_pressure"):
+        recover_state_from_contents_detailed(
+            contents=contents,
+            mesh=mesh,
+            species_maps=species_maps,
+            recovery_cfg=cfg,
+            liquid_thermo=SimpleLiqThermo(2000.0),
+            gas_thermo=HPYThermo(cp=1005.0),
+            interface_seed=make_interface(species_maps),
+            gas_pressure=-1.0,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Case 9: S-5 MW conversion fallback populates Xg_full
+# ---------------------------------------------------------------------------
+
+class MWConversionThermo(FakeLinearGasThermo):
+    """Gas thermo with molecular_weights but no mole_fractions_from_mass."""
+
+    def __init__(self, cp: float, molecular_weights: list[float]) -> None:
+        super().__init__(cp=cp)
+        self._mw = np.array(molecular_weights, dtype=np.float64)
+
+    @property
+    def molecular_weights(self) -> np.ndarray:
+        return self._mw
+
+    def temperature_from_hpy(self, h: float, Y_full: np.ndarray, pressure: float) -> float:
+        return (float(h) - self.h_ref) / self.cp
+
+
+def test_xg_full_populated_via_mw_conversion() -> None:
+    """When mole_fractions_from_mass is absent but molecular_weights exists, use MW fallback."""
+    n_liq, n_gas = 1, 2
+    T_l = np.array([300.0])
+    T_g = np.array([900.0, 920.0])
+    cp_l, cp_g = 2000.0, 1005.0
+    mesh = make_mesh(n_liq, n_gas)
+    species_maps = make_species_maps()  # 2 gas species: N2=28, O2=32
+    contents = make_contents(n_liq, n_gas, cp_l, cp_g, T_l, T_g)
+    cfg = make_recovery_cfg()
+    # MW of N2=28, O2=32 g/mol
+    gas_thermo = MWConversionThermo(cp=cp_g, molecular_weights=[28.0, 32.0])
+
+    class SimpleLiqThermo:
+        def __init__(self, cp: float) -> None:
+            self.cp = cp
+        def enthalpy_mass(self, T: float, Y_full: np.ndarray) -> float:
+            return self.cp * float(T)
+        def cp_mass(self, T: float, Y_full: np.ndarray) -> float:
+            return self.cp
+
+    result = recover_state_from_contents_detailed(
+        contents=contents,
+        mesh=mesh,
+        species_maps=species_maps,
+        recovery_cfg=cfg,
+        liquid_thermo=SimpleLiqThermo(cp_l),
+        gas_thermo=gas_thermo,
+        interface_seed=make_interface(species_maps),
+        gas_pressure=101325.0,
+    )
+    assert result.state.Xg_full is not None
+    assert result.state.Xg_full.shape == (n_gas, species_maps.n_gas_full)
+    # Row sums should be ≈ 1.
+    np.testing.assert_allclose(np.sum(result.state.Xg_full, axis=1), np.ones(n_gas), atol=1e-12)
+    assert result.diagnostics["Xg_full_recovery_status"] == "mw_conversion"
+
+
+# ---------------------------------------------------------------------------
+# Case 10: S-7 full diagnostics key set is present
+# ---------------------------------------------------------------------------
+
+def test_detailed_result_contains_full_s7_diagnostic_keys() -> None:
+    n_liq, n_gas = 2, 2
+    T_l = np.array([300.0, 310.0])
+    T_g = np.array([900.0, 910.0])
+    cp_l, cp_g = 2000.0, 1005.0
+    mesh = make_mesh(n_liq, n_gas)
+    species_maps = make_species_maps()
+    contents = make_contents(n_liq, n_gas, cp_l, cp_g, T_l, T_g)
+    cfg = make_recovery_cfg()
+    gas_thermo = HPYThermo(cp=cp_g)
+
+    class SimpleLiqThermo:
+        def __init__(self, cp: float) -> None:
+            self.cp = cp
+        def enthalpy_mass(self, T: float, Y_full: np.ndarray) -> float:
+            return self.cp * float(T)
+        def cp_mass(self, T: float, Y_full: np.ndarray) -> float:
+            return self.cp
+
+    result = recover_state_from_contents_detailed(
+        contents=contents,
+        mesh=mesh,
+        species_maps=species_maps,
+        recovery_cfg=cfg,
+        liquid_thermo=SimpleLiqThermo(cp_l),
+        gas_thermo=gas_thermo,
+        interface_seed=make_interface(species_maps),
+        gas_pressure=101325.0,
+    )
+    diag = result.diagnostics
+    required_keys = [
+        "liq_recovery_success",
+        "gas_recovery_success",
+        "liq_h_fwd_check_max_err",
+        "gas_h_fwd_check_max_err",
+        "liq_Y_num_minor_fixes",
+        "liq_Y_max_sum_err",
+        "liq_Y_max_negative_species_mass",
+        "gas_Y_num_minor_fixes",
+        "gas_Y_max_sum_err",
+        "gas_Y_max_negative_species_mass",
+        "gas_recovery_used_HPY",
+        "gas_recovery_used_fallback",
+        "gas_pressure_source",
+        "Xg_full_recovery_status",
+        "postchecks_passed",
+        "min_rho_l",
+        "min_rho_g",
+        "n_liq_cells",
+        "n_gas_cells",
+        "liq_inversion_mode",
+        "gas_inversion_mode",
+        "gas_hpy_skipped_reason",
+    ]
+    for key in required_keys:
+        assert key in diag, f"Missing diagnostics key: {key!r}"
+    assert diag["gas_pressure_source"] == "explicit"
+    assert diag["postchecks_passed"] is True
+    assert diag["liq_recovery_success"] is True
+    assert diag["gas_recovery_success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Case 11: S-2 cp_min linear estimate provides T_hint
+# ---------------------------------------------------------------------------
+
+def test_cp_min_linear_estimate_used_as_t_hint() -> None:
+    """cp_min linear estimate T=h/cp_min should be used when no seed or rolling hint."""
+    from core.state_recovery import _select_initial_temperature_guess
+    cfg = make_recovery_cfg(cp_min=1005.0)
+    T_low, T_high = 200.0, 4000.0
+    # h ≈ 1005 * 900 = 904500 → T_est = 904500 / 1005 = 900 K (in bounds)
+    h_target = 1005.0 * 900.0
+    T_hint = _select_initial_temperature_guess(
+        target_h=h_target,
+        bounds=(T_low, T_high),
+        recovery_cfg=cfg,
+        seed=None,
+        rolling_hint=None,
+    )
+    assert T_hint is not None
+    assert abs(T_hint - 900.0) < 1.0
+
+
+def test_cp_min_level2_skipped_when_seed_present() -> None:
+    """Level 1 seed takes priority over cp_min estimate."""
+    from core.state_recovery import _select_initial_temperature_guess
+    cfg = make_recovery_cfg(cp_min=1005.0)
+    T_hint = _select_initial_temperature_guess(
+        target_h=1005.0 * 900.0,
+        bounds=(200.0, 4000.0),
+        recovery_cfg=cfg,
+        seed=850.0,
+        rolling_hint=None,
+    )
+    # Should use seed=850, not cp_min estimate=900
+    assert T_hint == pytest.approx(850.0)

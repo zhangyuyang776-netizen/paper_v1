@@ -12,12 +12,16 @@ from core.state_recovery import StateRecoveryError, _recover_full_mass_fractions
 
 def call_rfmf(species_mass: np.ndarray, mass: np.ndarray, *, eps: float) -> np.ndarray:
     n_full = species_mass.shape[1]
-    return _recover_full_mass_fractions(
+    Y, _ = _recover_full_mass_fractions(
         species_mass,
         mass,
         n_full=n_full,
         species_recovery_eps_abs=eps,
+        m_min=1.0e-20,
+        Y_sum_tol=1.0e-10,
+        Y_hard_tol=1.0e-6,
     )
+    return Y
 
 
 # ---------------------------------------------------------------------------
@@ -119,10 +123,13 @@ def test_single_component_returns_ones_with_minor_fix() -> None:
     mass = np.array([1.0])
     # Even with exact match, single-component returns ones.
     species_mass = np.array([[1.0]])
-    Y = _recover_full_mass_fractions(
+    Y, _ = _recover_full_mass_fractions(
         species_mass, mass,
         n_full=1,
         single_component_name="ethanol",
         species_recovery_eps_abs=eps,
+        m_min=1.0e-20,
+        Y_sum_tol=1.0e-10,
+        Y_hard_tol=1.0e-6,
     )
     np.testing.assert_allclose(Y, [[1.0]])

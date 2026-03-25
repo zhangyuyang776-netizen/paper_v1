@@ -7,6 +7,7 @@ from core.state_recovery import (
     StateRecoveryError,
     _invert_liquid_h_to_T_safeguarded,
     _recover_liquid_phase_state_with_diagnostics,
+    validate_recovered_state_postchecks,
 )
 from core.types import (
     ConservativeContents,
@@ -136,13 +137,14 @@ def test_liquid_inversion_forward_check_passes() -> None:
     h_target = thermo.enthalpy_mass(T_target, np.array([1.0]))
     y_full = np.array([1.0])
 
-    T, mode, bounds = _invert_liquid_h_to_T_safeguarded(
+    T, mode, bounds, h_fwd_err = _invert_liquid_h_to_T_safeguarded(
         target_h=h_target,
         y_full=y_full,
         recovery_cfg=cfg,
         liquid_thermo=thermo,
     )
     assert abs(T - T_target) < 1e-6
+    assert h_fwd_err < 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +163,7 @@ def test_liquid_inversion_forward_check_raises_on_bad_result() -> None:
     T_target = 350.0
     # h(T_target) = 700,000 J/kg; bracket is [200, 800] → midpoint = 500 K
     # Newton stops at 500 K (|h(500) - 700000| = 300000 <= 1e10)
-    # Forward check: 300000 / max(700000, 1) ≈ 0.43 >> 1e-6 → raises
+    # Absolute forward check: 300000 > h_check_tol=1e-6 → raises
     h_target = thermo.enthalpy_mass(T_target, np.array([1.0]))
     y_full = np.array([1.0])
 
@@ -236,3 +238,57 @@ def test_liquid_nan_seed_falls_back_to_rolling_hint() -> None:
         temperature_seeds=seeds,
     )
     np.testing.assert_allclose(Tl, T_true, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Case 5: liquid phase diagnostics contain expected S-7 keys
+# ---------------------------------------------------------------------------
+
+def test_liquid_phase_diagnostics_contain_s7_keys() -> None:
+    n_liq = 2
+    T_true = np.array([300.0, 320.0])
+    cp = 2000.0
+    mesh = make_mesh_liq(n_liq)
+    species_maps = make_species_maps_single_liq()
+    contents = make_liq_contents(n_liq, cp, T_true)
+    cfg = make_recovery_cfg()
+    thermo = FakeLinearLiquidThermo(cp=cp)
+
+    rho_l, Yl_full, hl, Tl, diag = _recover_liquid_phase_state_with_diagnostics(
+        contents, mesh, species_maps, cfg, thermo,
+    )
+    for key in ("liq_recovery_success", "liq_h_fwd_check_max_err",
+                "liq_Y_num_minor_fixes", "liq_Y_max_sum_err",
+                "liq_Y_max_negative_species_mass"):
+        assert key in diag, f"Missing key: {key!r}"
+    assert diag["liq_recovery_success"] is True
+    assert diag["liq_h_fwd_check_max_err"] >= 0.0
+    assert diag["liq_Y_num_minor_fixes"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Case 6: validate_recovered_state_postchecks raises on rho below rho_min
+# ---------------------------------------------------------------------------
+
+def test_postchecks_raise_on_rho_below_rho_min() -> None:
+    from core.state_recovery import StateRecoveryError, validate_recovered_state_postchecks
+    from core.types import InterfaceState, State
+
+    cfg = make_recovery_cfg(rho_min=100.0)  # very high rho_min to force failure
+    state = State(
+        Tl=np.array([300.0]),
+        Yl_full=np.ones((1, 1)),
+        Tg=np.array([900.0]),
+        Yg_full=np.ones((1, 1)),
+        interface=InterfaceState(
+            Ts=300.0, mpp=0.0,
+            Ys_g_full=np.array([1.0]),
+            Ys_l_full=np.array([1.0]),
+        ),
+        rho_l=np.array([1.0]),   # far below rho_min=100
+        rho_g=np.array([1.0]),
+        hl=np.array([600000.0]),
+        hg=np.array([904500.0]),
+    )
+    with pytest.raises(StateRecoveryError, match="rho_min"):
+        validate_recovered_state_postchecks(state, cfg)
