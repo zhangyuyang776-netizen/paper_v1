@@ -1,9 +1,15 @@
 # src/core 模块代码审查报告
 
-**审查日期**：2026-03-24
+**审查日期**：2026-03-25
 **审查范围**：`src/core/` 全部 9 个模块
-**参照文档**：`md/physics and numerical/` 下全部指导文件
-**审查结论总览**：发现 11 处偏差，其中 2 处为算法级严重问题，7 处为中等功能缺失，2 处为轻微结构偏差。（本报告为修订版：初版 S-1 误判已撤销，S-2/S-3 已更正，新增 S-6/S-7/S-8 三项。）
+**参照文档**：`md/physics and numerical/` 下相关指导文件
+**审查结论总览**：发现 16 处偏差，其中 2 处为严重实现偏差，7 处为中等功能/接口偏差，7 处为轻微结构或配置合同偏差。
+
+> **修订说明（2026-03-25）**：
+> - 保留并确认：`R-1`、`R-2`、`S-1`、`S-2`、`S-3`、`S-4`、`S-5`、`L-1`、`P-1`
+> - 重写：`S-6`、`S-7`、`T-1`、`CS-1`
+> - 新增：`R-3`、`CS-2`、`CS-3`
+> - 删除：原 `S-8`
 
 ---
 
@@ -12,14 +18,14 @@
 | 文件 | 主要职责 | 审查结论 |
 |------|---------|---------|
 | `grid.py` | 三区网格构建、控制面速度 | **一致** |
-| `remap.py` | 保守量重映射 | **2 处偏差** |
+| `remap.py` | 保守量重映射 | **3 处偏差** |
 | `state_recovery.py` | 守恒量→原始态恢复 | **7 处偏差** |
 | `layout.py` | 未知量向量布局 | **1 处偏差（Phase B）** |
 | `state_pack.py` | 状态向量打包/解包 | **一致** |
-| `types.py` | 数据结构定义 | **1 处缺项** |
+| `types.py` | 数据结构定义 | **1 处轻微结构缺口** |
 | `preprocess.py` | 配置归一化 | **1 处轻微缺失** |
-| `config_loader.py` | YAML 加载与 schema 校验 | **一致** |
-| `config_schema.py` | 配置 schema 约束 | **1 处关联缺项** |
+| `config_loader.py` | YAML 加载 | **一致** |
+| `config_schema.py` | 配置 schema 约束 | **3 处偏差** |
 
 ---
 
@@ -31,63 +37,99 @@
 |--------|------------|---------|------|
 | Region 1 面坐标 | `r_{1,f}(j) = j·(a/N₁)` | `np.linspace(0, a, n_liq+1)` | ✓ |
 | Region 2 面坐标 | `r_{2,f}(j) = a + j·((r_I−a)/N₂)` | `np.linspace(a, r_I, n_gas_near+1)` | ✓ |
-| Region 3 首格大小 | `Δr₃,₁ = r_I / N₂ = 5a₀/N₂` | `dr3_first = r_I / n_gas_near`（L54）| ✓ |
-| 球坐标格体积 | `V = (4π/3)(r₊³ − r₋³)` | `(4π/3)*(r[1:]³ − r[:-1]³)`（L98）| ✓ |
-| Region 1 控制面速度 | `v_c(r) = ȧ·r/a` | `dot_a * r / a`（L137）| ✓ |
-| Region 2 控制面速度 | `v_c(r) = ȧ·(r_I−r)/(r_I−a)` | `dot_a*(r_I−r)/(r_I−a)`（L138-140）| ✓ |
-| Region 3 控制面速度 | `v_c = 0` | 数组初始化为零，Region 3 不更新（L132）| ✓ |
+| Region 3 首格大小 | `Δr₃,₁ = r_I / N₂ = 5a₀/N₂` | `dr3_first = r_I / n_gas_near` | ✓ |
+| 球坐标格体积 | `V = (4π/3)(r₊³ − r₋³)` | `(4π/3)*(r[1:]³ − r[:-1]³)` | ✓ |
+| Region 1 控制面速度 | `v_c(r) = ȧ·r/a` | `dot_a * r / a` | ✓ |
+| Region 2 控制面速度 | `v_c(r) = ȧ·(r_I−r)/(r_I−a)` | `dot_a*(r_I−r)/(r_I−a)` | ✓ |
+| Region 3 控制面速度 | `v_c = 0` | Region 3 保持零值 | ✓ |
 
-`v_c_cells`（L151）取相邻面值的算术平均。指导文件仅定义面速度，未规定胞中心插值方式；对线性 v_c 分布（Region 1、2 均为线性），算术平均等于精确值，无误差。
+`v_c_cells` 取相邻面速度算术平均。指导文件未单独规定胞中心插值方式；对 Region 1/2 的线性分布，这一实现与精确值一致。
 
 ---
 
-## 三、`remap.py` — 发现 2 处偏差
+## 三、`remap.py` — 发现 3 处偏差
 
 参照：`remap_and_conservative_projection_guideline_final_v2.md`
 
-### 偏差 R-1【严重】新暴露子体积填充使用体相端格而非界面态
+### 偏差 R-1【严重】新暴露子体积填充仍使用体相端格态，而非旧时间层界面态
 
-**指导文件规定（§新暴露子体积处理）：**
-> 新暴露子体积的参考态必须取**旧时间层界面态**：
-> `(ρ·ΔV)_exp = ρ_{s,l}^n · ΔV`，
-> `(ρY_i·ΔV)_exp = ρ_{s,l}^n · Y_{s,l,i}^n · ΔV`，
-> `(ρh·ΔV)_exp = ρ_{s,l}^n · h_{s,l}^n · ΔV`
+**指导文件规定（§7.4.2）**：
 
-**代码实现（L287-314）：**
+对 newly exposed subvolume，正式采用的是：
+
+- 旧已接受时间层的界面 `T_s^n`
+- 旧已接受时间层的界面 `Y_{s,l}^n / Y_{s,g}^n`
+- 再通过当前物性主线得到 `rho_{s,l/g}^n`、`h_{s,l/g}^n`
+
+**代码实现**：
+
 ```python
-# 液相新暴露体积
-reference_rho   = float(old_state.rho_l[-1])      # 液相最外层格 ← 应为 rho_s_l^n
-reference_y_full = old_state.Yl_full[-1, :]        # 液相最外层格 ← 应为 Ys_l_full^n
-reference_h     = float(old_state.hl[-1])          # 液相最外层格 ← 应为 hs_l^n
+def _extract_liquid_completion_reference(old_state: State) -> tuple[float, np.ndarray, float]:
+    return float(old_state.rho_l[-1]), np.asarray(old_state.Yl_full[-1, :]), float(old_state.hl[-1])
 
-# 气相新暴露体积
-reference_rho   = float(old_state.rho_g[0])        # 气相最内层格 ← 应为 rho_s_g^n
-reference_y_full = old_state.Yg_full[0, :]         # 气相最内层格 ← 应为 Ys_g_full^n
-reference_h     = float(old_state.hg[0])           # 气相最内层格 ← 应为 hs_g^n
+def _extract_gas_near_completion_reference(old_state: State, old_mesh: Mesh1D) -> tuple[float, np.ndarray, float]:
+    return float(old_state.rho_g[0]), np.asarray(old_state.Yg_full[0, :]), float(old_state.hg[0])
 ```
 
-**影响**：液相均匀、界面态与端格接近时误差小；当界面组分或温度梯度显著时，引入额外守恒误差。根本原因在于 `InterfaceState`（`types.py`）目前未携带 `hs_l`、`hs_g` 字段（见偏差 T-1）。
+新暴露体积补全直接取液相最外层格、气相最内层格的 bulk cell-average，而不是旧界面态。
+
+**影响**：当界面态与端格态存在明显温度或组分梯度时，remap 会在界面附近引入额外守恒误差与不一致初值。该问题成立，但其结构原因不止 `InterfaceState` 缺字段，见 `R-3` 与 `T-1`。
 
 ---
 
-### 偏差 R-2【轻微】重映射诊断未计算相对误差
+### 偏差 R-2【轻微】重映射诊断只报 before/after，总结里没有相对守恒误差
 
-**指导文件要求输出（§守恒验证）：**
-```
-remap_mass_err_liquid   = |M^{old,*} − M^{old}| / max(M^{old}, ε)
-remap_mass_err_gas
-remap_species_err_max
-remap_enthalpy_err_liquid
-remap_enthalpy_err_gas
+**指导文件规定（§8）**要求至少计算：
+
+```text
+epsilon_M_l = |M_l^{old,*} - M_l^{old}| / max(M_l^{old}, eps)
+epsilon_M_g = |M_g^{old,*} - M_g^{old}| / max(M_g^{old}, eps)
+epsilon_M_k = |M_k^{old,*} - M_k^{old}| / max(M_k^{old}, eps)
 ```
 
-**代码实现（`summarize_remap_diagnostics`，L366-383）：**
+**代码实现（`summarize_remap_diagnostics`）**：
+
 ```python
-"mass_l_before": ..., "mass_l_after": ...,   # 仅原始值，未计算相对误差
-"enthalpy_l_before": ..., "enthalpy_l_after": ...,
+"mass_l_before": ...,
+"mass_l_after": ...,
+"mass_g_before": ...,
+"mass_g_after": ...,
+"enthalpy_l_before": ...,
+"enthalpy_l_after": ...,
 ```
 
-**影响**：无相对误差计算，无法对守恒性做定量监控和阈值报警。
+只输出前后总量，没有计算相对误差、最大组分误差或阈值友好的守恒指标。
+
+**影响**：无法直接做守恒监控、阈值报警和回归比较。
+
+---
+
+### 偏差 R-3【中等，结构级】remap 主路径没有 thermo / `P_inf` 或等价界面热力学参考态通道
+
+**指导文件口径**：新暴露子体积可由旧界面 `Ts^n`、`Ys^n` 加当前物性主线派生 `rho_s`、`h_s`；也可以由上游先提供等价的界面热力学参考态。
+
+**代码实现**：
+
+```python
+def _build_transferred_contents(
+    *,
+    old_state: State,
+    old_mesh: Mesh1D,
+    new_mesh: Mesh1D,
+) -> ConservativeContents:
+    ...
+```
+
+`_build_transferred_contents()` 只拿到 `old_state / old_mesh / new_mesh`，拿不到：
+
+- `liquid_thermo`
+- `gas_thermo`
+- `P_inf`
+- 或预计算的 `rho_s/h_s` 参考态对象
+
+因此这条 remap 主链无法按指导文件从 `Ts/Ys` 严格派生 `rho_s/h_s`，只能退回去读 bulk 端格。
+
+**影响**：`R-1` 不是简单补几个字段就能自动修好；真正缺的是 remap 补全路径的正式依赖通道。
 
 ---
 
@@ -95,291 +137,422 @@ remap_enthalpy_err_gas
 
 参照：`state_recovery_and_enthalpy_inversion_guideline_final.md`
 
-> **修订说明（2026-03-24）**：初版报告 S-1、S-2 两项结论经核查存在误判，本版本予以更正。初版将辅助函数 `_invert_temperature_monotone_bisection` 误认为主调用路径；实际主路径为液相 `_invert_liquid_h_to_T_safeguarded → _invert_temperature_safeguarded_newton`、气相 `_invert_gas_h_to_T_hpy_first`，两者均已实现 Newton 保险步与 HPY 优先分支。原初版 S-1（纯二分法）结论撤销；S-2 更正为接口设计层面的准确描述。此外，S-3 关于"每次从区间中点开始"的表述不准确，一并修正。新增偏差 S-6/S-7/S-8。
+> **修订说明**：初版关于“纯二分法 / HPY 未实现”的判断已撤销。复核后确认：液相主线为 safeguarded Newton，气相存在 HPY-first 分支，原始误判不再计入偏差。
 
----
+### 偏差 S-1【中等】气相 HPY 分支存在，但激活依赖隐式 pressure 来源
 
-### ~~偏差 S-1【已撤销】焓反演算法：纯二分法，缺少 Newton 保险步~~
+**已确认正确的部分**：`_invert_gas_h_to_T_hpy_first()` 已实现 HPY-first 和 fallback 标量反演，`use_cantera_hpy_first` 不是死配置。
 
-> **该项为误判，已撤销。**
->
-> 初版引用 `_invert_temperature_monotone_bisection`（L217-253）作为主路径。经复核，此函数是存在但**未被主路径调用**的辅助函数。实际运行路径为：
-> - **液相**：`_recover_liquid_phase_state_with_diagnostics` → `_invert_liquid_h_to_T_safeguarded` → `_invert_temperature_safeguarded_newton`，已实现 Newton 步 + 二分 fallback + 区间收紧。
-> - **气相**：`_recover_gas_phase_state_with_diagnostics` → `_invert_gas_h_to_T_hpy_first` → 内部同样调用 `_invert_temperature_safeguarded_newton` 作为 fallback。
->
-> 算法实现与指导文件一致，本项不计入偏差。
+**真正的不一致点**：
 
----
-
-### 偏差 S-1【中等】气相 HPY 主线：接口缺显式 P_inf，依赖 thermo 对象隐式属性
-
-（替换初版错误结论"HPY 主方法未实现 / 死配置"）
-
-**实际实现情况**：`_invert_gas_h_to_T_hpy_first` 已正确实现 HPY-first 分支，`use_cantera_hpy_first` 被真正检查并触发 `_call_temperature_from_hpy`；Newton + 二分 fallback 也已实现。HPY 分支并非"死配置"。
-
-**真正的问题（`_infer_gas_recovery_pressure`）：**
 ```python
 def _infer_gas_recovery_pressure(gas_thermo: GasThermoProtocol) -> float | None:
     reference_pressure = getattr(gas_thermo, "reference_pressure", None)
-    if reference_pressure is None:
-        return None   # → HPY 被静默跳过，记 skipped_reason="missing_reference_pressure"
+    ...
 ```
 
-`recover_state_from_contents` 签名不含显式 `P_inf` 参数，系统压力靠 thermo 对象的隐式属性 `reference_pressure` 推断。只要调用方传入的 thermo 对象未挂载该属性，HPY 主线便静默降级，调用方无感知。
+气相恢复的压力来源不是 recovery 接口显式输入，而是从 `gas_thermo.reference_pressure` 隐式推断。若 thermo 对象未挂载该属性，HPY 主线会被跳过并退回 scalar inversion。
 
-**影响**：HPY 主线的激活与否取决于 thermo 对象实现细节，而非恢复模块的显式接口合同，违反指导文件"显式稳定主路径"要求，增加接口脆弱性。
-
----
-
-### 偏差 S-2【中等】焓反演初始猜值：仅 sweep 内相邻格传递，缺时间层历史温度
-
-（修正初版"每次从区间中点开始搜索"的不准确表述）
-
-**指导文件规定（§初始猜值优先级）：**
-1. `T_0 = T_prev`（**上一时间步**的温度场）
-2. 线性估算：`T_0 = T_ref + (h_target − h(T_ref)) / c_p(T_ref)`，钳位至区间内
-
-**实际实现**：代码中 `T_hint` 确实存在并被传入反演函数，但其来源是**当前 sweep 内相邻格**（即空间邻格插值），而非上一时间步保存的历史温度 `T_prev`。时间层历史温度在 API 层面根本未作为参数传入（见偏差 S-8）。
-
-**影响**：相邻格 T_hint 有助于空间平滑情形，但在时间步间温度变化显著（如初始瞬态）时，无法利用真正的历史信息加速收敛。
+**影响**：HPY 主线的可用性依赖 thermo 实现细节，而非 recovery 模块的正式接口合同。
 
 ---
 
-### 偏差 S-3【中等】缺少组分守恒轻微偏差的修正规则
+### 偏差 S-2【中等】焓反演未接入时间层历史温度，只在 sweep 内传递相邻格 `T_hint`
 
-**指导文件规定（§最小修正规则）：**
-1. 若 `|ρY_i| < ε_abs`，钳位为零
-2. 若 `|Σ(ρY_i) − ρ| < ε_tol`，等比例缩放所有非零分量
+**指导文件规定（§7.7）**：
 
-**代码实现（L54-61）：**
+第一优先初值为历史温度：
+
+```text
+T_0 = T_prev
+```
+
+第二优先才是基于 `cp_min` 的线性估计。
+
+**代码实现**：
+
+```python
+T_hint: float | None = None
+for i, h_i in enumerate(hl):
+    T_i, mode_i, bounds_i = _invert_liquid_h_to_T_safeguarded(..., T_hint=T_hint)
+    ...
+    T_hint = T_i
+```
+
+液相和气相都只把上一个 sweep cell 的温度作为下一个 cell 的 `T_hint`，没有上一时间层或 remap 前同一控制体的 `T_prev` 输入通道。
+
+**影响**：空间上平滑时可受益，但无法落实指导文件规定的“历史温度优先”策略。
+
+---
+
+### 偏差 S-3【中等】组分轻微偏差没有 minor-fix，仍是直接 hard fail
+
+**指导文件规定（§5.6 / §11）**：
+
+- 对绝对值小于 `species_recovery_eps_abs` 的负 partial density 置零
+- 若 `|Σ(ρY_i) - ρ|` 小于阈值，则按比例缩放非零分量
+
+**代码实现**：
+
 ```python
 if np.any(species_mass < 0.0):
     raise StateRecoveryError("species_mass must be non-negative")
-# 若 sum ≠ mass 也直接 raise
+...
+if np.any(diff > tol):
+    raise StateRecoveryError("species_mass sums must match mass within tolerance")
 ```
 
-**影响**：小数值舍入产生的轻微负质量分数（如 −1e-15）在指导文件中属于可修正情形，代码直接抛出异常，将可恢复故障升级为致命错误。
+只要出现轻微负值或轻微闭合误差，当前实现就直接失败。
+
+**影响**：把指导文件允许的 rounding-level minor fix 全部升级成致命错误。
 
 ---
 
-### 偏差 S-4【中等】缺少反演后前向一致性校验
+### 偏差 S-4【中等】缺少焓反演后的前向一致性校验
 
-**指导文件规定（§后验一致性检查）：**
-```
+**指导文件规定（§7.9 / §12）**：
+
+```text
 h_recomputed = h(T_recovered, Y)
-要求: |h_recomputed − h_target| ≤ h_check_tol
+要求 |h_recomputed - h_target| <= h_check_tol
 ```
 
-**代码**：`recover_state_from_contents`（L256-273）在得到 T 后仅调用 `validate_recovered_state_bounds` 检查温度区间，**未重算 h(T,Y) 与目标值对比**。
+**代码实现**：恢复完温度后只调用 `validate_recovered_state_bounds()` 检查温区，没有正向回代 `h(T,Y)` 去对比 target enthalpy。
 
-**影响**：无法发现因截断退出或数值异常导致的温度与焓不自洽情况。
+**影响**：无法发现温度收敛形式成立但焓一致性已偏离的情况。
 
 ---
 
-### 偏差 S-5【中等】气相摩尔分数 `Xg_full` 恒为 None
+### 偏差 S-5【中等】气相摩尔分数 `Xg_full` 仍恒为 `None`
 
-**指导文件规定（§气相恢复输出，Hard 要求）：**
-> 气相恢复必须同时输出 `Yg_full`（质量分数）和 `Xg_full`（摩尔分数），
-> 失败视为致命错误。
+**指导文件规定（§8.5）**：
 
-**代码（L269）：**
+```text
+气相恢复后必须得到：
+- Yg_full
+- Xg_full
+```
+
+**代码实现**：
+
 ```python
 state = State(
     ...
-    Xg_full=None,   # 硬编码 None，从不计算
+    Xg_full=None,
 )
 ```
 
-**影响**：界面平衡计算（Raoult 定律）、诊断量及后续组分残差均需摩尔分数，下游模块须自行重算或跳过此校验。
+公共恢复路径从未计算气相 full mole fraction。
+
+**影响**：后续 transport、界面平衡和 diagnostics 所需的 full gas composition 仍不完整。
 
 ---
 
-### 补充【轻微】后验检查范围不完整
+### 偏差 S-6【严重，结构问题】`RecoveryConfig` 现有字段集合与指导文件要求相比仍有大面积缺项
 
-`validate_recovered_state_bounds`（L222-226）仅检查温度区间。指导文件还要求：
+**先纠正事实描述**：当前 `RecoveryConfig` 并非“只有温区和一个布尔开关”，代码里已经有：
 
-| 检查项 | 指导文件要求 | 代码 |
-|--------|------------|------|
-| 密度下界 | `ρ > ρ_min` | 未检查 |
-| 质量分数范围 | `0 ≤ Y_i ≤ 1`, `\|ΣY_i − 1\| ≤ Y_sum_tol` | 未检查 |
-| 气相完整组分 | `X_i` 合法且与 `Y_i` 一致 | 未检查 |
-| 前向一致性 | `\|h_recomputed − h_target\|` | 未检查（同 S-5）|
+- `liq_h_inv_tol`
+- `liq_h_inv_max_iter`
+- `gas_h_inv_tol`
+- `gas_h_inv_max_iter`
+- `use_cantera_hpy_first`
 
-`summarize_recovery_diagnostics`（L277-285）仅返回 6 个量（`min/max_Tl`, `min/max_Tg`, `min_rho_l`, `min_rho_g`），指导文件要求约 20 个诊断量（各相反演迭代次数、残差、前向误差、修正次数等）。
+**真正的问题**：与指导文件 §13 / config schema 指导文件 §7.11 对照，`RecoveryConfig` 仍缺少大量正式参数，例如：
 
----
+| 指导文件参数 | 用途 | 当前 `RecoveryConfig` |
+|------|------|------|
+| `rho_min` | 密度/状态合法性下界 | 缺失 |
+| `m_min` | 质量下界 | 缺失 |
+| `species_recovery_eps_abs` | minor-fix 负 partial density 阈值 | 缺失 |
+| `Y_sum_tol` | 组分和偏差容差 | 缺失 |
+| `Y_hard_tol` | 组分 hard-fail 容差 | 缺失 |
+| `h_abs_tol` / `h_rel_tol` | 焓反演收敛容差体系 | 缺失 |
+| `h_check_tol` | 前向一致性校验容差 | 缺失 |
+| `T_step_tol` | 温度步长/收敛控制 | 缺失 |
+| `cp_min` | 线性估计与稳定保护 | 缺失 |
+| `liquid_h_inv_max_iter` | 正式液相最大迭代数命名 | 语义未对齐，见 `CS-2` |
 
-### 偏差 S-6【严重，结构问题】`RecoveryConfig` 缺少指导文件要求的多项阈值参数
-
-**指导文件规定（§恢复配置合同）**中明确要求以下参数必须可配置：
-
-| 参数 | 用途 | 当前 `RecoveryConfig` |
-|------|------|----------------------|
-| `h_check_tol` | 前向一致性校验容差（偏差 S-4 所需）| **缺失** |
-| `Y_sum_tol` | 组分归一化修正阈值（偏差 S-3 所需）| **缺失** |
-| `rho_min_l` / `rho_min_g` | 密度下界检查（补充节所需）| **缺失** |
-| `Y_neg_clip_tol` | 负质量分数钳位阈值（偏差 S-3 所需）| **缺失** |
-| `newton_max_iter` / `bisection_max_iter` | 反演迭代上限 | **缺失** |
-
-**代码现状**：`RecoveryConfig` 仅包含温度区间 `T_min_l/g`、`T_max_l/g` 以及 `use_cantera_hpy_first` 布尔开关，阈值参数被硬编码在各反演函数内部。
-
-**影响**：缺失参数使偏差 S-3、S-4 的修正规则在结构层面**无法实现**（即便写了修正逻辑，阈值也无处注入）；同时 `config_schema.py` 的 recovery 块 schema 也随之不完整（见第九节）。此项是 S-3/S-4 修复的结构前置条件，优先级最高。
+**影响**：`S-3`、`S-4` 以及合法性校验相关逻辑缺少正式配置注入口，当前实现只能依赖硬编码或根本不实现。
 
 ---
 
-### 偏差 S-7【中等】`recover_state_from_contents` public API 丢弃 recovery diagnostics
+### 偏差 S-7【中等】public API 没有向上层暴露 recovery diagnostics
 
-**指导文件规定（§恢复接口合同）：**
-> 公共接口应同时返回 `State` 和 `RecoveryDiagnostics`，后者包含各相迭代次数、残差、前向误差、修正标志等，供上层做定量监控和日志。
+**代码执行链**：
 
-**代码实现**：内部函数 `_recover_liquid_phase_state_with_diagnostics` 和 `_recover_gas_phase_state_with_diagnostics` 已生成详细的每格诊断对象，但 `recover_state_from_contents`（公共入口）仅将诊断传入 `summarize_recovery_diagnostics` 做聚合摘要后再丢弃，返回值只有 `State`。
-
-**影响**：上层调用方无法获取细粒度诊断（如某格迭代超限、某格 HPY 被跳过），诊断能力被锁死在模块内部，与 `remap.py` 的诊断设计模式不一致。
-
----
-
-### 偏差 S-8【中等】API 缺显式 `T_prev` 参数，历史温度优先策略接口合同缺失
-
-**指导文件规定（§初始猜值优先级）：**
-> 恢复接口须接受 `T_prev`（上一时间步温度场数组）作为可选参数，作为最优先的初始猜值来源。
-
-**代码实现**：`recover_state_from_contents` 签名为：
 ```python
-def recover_state_from_contents(
-    contents: ConservedContents,
-    thermo: ...,
-    recovery_cfg: RecoveryConfig,
-) -> State:
-```
-无 `T_prev` 参数。偏差 S-2 中提到的"相邻格 T_hint"是 sweep 内的空间传递，并非时间层历史温度。
+def _recover_state_from_contents_internal(...) -> tuple[State, dict[str, object]]:
+    ...
+    return state, diagnostics
 
-**影响**：即使在 `_invert_temperature_safeguarded_newton` 内部增加对时间历史猜值的支持，在当前 API 合同下也无任何通道将 `T_prev` 注入，S-2 的修复在结构层面被此缺陷阻塞。
+def recover_state_from_contents(...) -> State:
+    state, _ = _recover_state_from_contents_internal(...)
+    return state
+```
+
+内部实现确实生成并返回 `(state, diagnostics)`；公共入口则直接丢弃 diagnostics，并非“先 summarize 再丢”。
+
+**指导文件约束的准确表述**：指导文件要求 recovery 至少输出 diagnostics，供 remap / diagnostics / logging 链路使用；但并未硬性规定 public API 必须采用 `(State, RecoveryDiagnostics)` 这一唯一返回型式。
+
+**影响**：当前真实不一致是“上层没有正式通道拿到 recovery diagnostics”，而不是“返回值型式必须等于某个固定二元组”。
+
+---
+
+### 补充【轻微】恢复后的校验与诊断范围仍明显不完整
+
+`validate_recovered_state_bounds()` 仅检查温度区间；结合指导文件，还缺少：
+
+| 检查项 | 指导文件要求 | 当前代码 |
+|--------|------------|------|
+| 密度下界 | `rho > rho_min` | 未检查 |
+| 质量分数范围 | `0 <= Y_i <= 1`，且 `|sum(Y)-1| <= Y_sum_tol` | 未检查 |
+| 前向焓一致性 | `|h_recomputed - h_target| <= h_check_tol` | 未检查（同 `S-4`） |
+| 气相完整组成 | `Xg_full` 合法且与 `Yg_full` 一致 | 未检查（同 `S-5`） |
+
+同时，`summarize_recovery_diagnostics()` 只返回：
+
+- `min/max_Tl`
+- `min/max_Tg`
+- `min_rho_l`
+- `min_rho_g`
+
+而指导文件 §12 要求的 diagnostics 还包括：
+
+- enthalpy inversion iteration counts
+- residual / recomputed enthalpy error
+- minor-fix 次数
+- HPY/fallback 标志
+- 全局 fail 计数与极值类诊断
 
 ---
 
 ## 五、`layout.py` — 发现 1 处 Phase B 结构偏差
 
-参照：`unknowns_strategy_guideline_final.md`
+参照：`interface_block_unknowns_and_residuals_table_final.md`
 
-### 偏差 L-1【轻微，仅影响 Phase B】界面块未知量排序不一致
+### 偏差 L-1【轻微，仅影响 Phase B】界面块未知量顺序不符合指导文件
 
-**指导文件 Phase B 界面块排序：**
+**指导文件 Phase B 顺序**：
+
+```text
+[Y_{s,l,red} | T_s | Y_{s,g,red} | mpp]
 ```
-[Y_{s,l,1} … Y_{s,l,Nle} | T_s | Y_{s,g,1} … Y_{s,g,Nge} | mpp]
-```
 
-**代码排序（`_build_field_slices`，L303-307）：**
+**代码顺序（`_build_field_slices`）**：
+
 ```python
-if_temperature_slice  = [if_start : if_start+1]          # T_s 在首位
-if_gas_species_slice  = [T_s.stop : T_s.stop+n_gas_red]  # Y_{s,g} 紧随
-if_mpp_slice          = [Y_sg.stop : Y_sg.stop+1]         # mpp
-if_liq_species_slice  = [mpp.stop : mpp.stop+n_liq_red]  # Y_{s,l} 在末尾
+if_temperature_slice = ...
+if_gas_species_slice = ...
+if_mpp_slice = ...
+if_liq_species_slice = ...
 ```
 
-即代码布局为 `[T_s | Y_{s,g} | mpp | Y_{s,l}]`，液相接口物种被移到末尾。
+实际布局为：
 
-**影响**：Phase A（当前算例，`n_liq_red=0`）液相接口块为空，此偏差无实际影响；切换 Phase B 多组分液相时，Jacobian fieldsplit 分块结构与指导不符，影响 Schur 预条件器的块结构假设。
+```text
+[T_s | Y_{s,g,red} | mpp | Y_{s,l,red}]
+```
+
+**影响**：Phase A 下 `n_liq_red = 0`，当前算例几乎不受影响；切到 Phase B 多组分液滴后，界面块顺序与指导文件不一致。
 
 ---
 
-## 六、`state_pack.py` — 一致 ✓
+## 六、`state_pack.py` — 与指导文件一致 ✓
 
 参照：`unknowns_strategy_guideline_final.md`
 
-| 要求 | 规定 | 代码 | 状态 |
+| 要求 | 指导文件规定 | 代码实现 | 状态 |
 |------|------|------|------|
-| 闭包物种重建 | `Y_cl = 1 − Σ Y_i^{red}` | `full[idx] = 1.0 - np.sum(reduced)`（L104）| ✓ |
-| 单组分液相零 reduced | 返回 `[1.0]` | `return np.array([1.0])`（L99）| ✓ |
-| Rd, u_l, u_g, ȧ 不入向量 | 明确排除 | 仅打包 T、Y、mpp、Ts | ✓ |
-| 解包后 derived fields 为 None | 待属性计算后填充 | `rho_l=None, hl=None, Xg_full=None`（L211-215）| ✓ |
+| 闭包物种重建 | `Y_cl = 1 - ΣY_i^{red}` | 已实现 | ✓ |
+| 单组分液相零 reduced | 返回 `[1.0]` | 已实现 | ✓ |
+| `R_d`、`u_l`、`u_g`、`ȧ` 不入向量 | 明确排除 | 已实现 | ✓ |
+| 解包后 derived fields 先置空 | 待属性恢复后填充 | 已实现 | ✓ |
 
 ---
 
-## 七、`types.py` — 发现 1 处关联缺项
+## 七、`types.py` — 发现 1 处轻微结构缺口
 
 参照：`remap_and_conservative_projection_guideline_final_v2.md`
 
-### 偏差 T-1【轻微，结构根因】`InterfaceState` 缺少界面焓与密度字段
+### 偏差 T-1【轻微】`InterfaceState` 未携带预计算界面热力学参考态
 
-**现状（L868-888）：**
+**现状**：
+
 ```python
 class InterfaceState:
     Ts: float
     mpp: float
     Ys_g_full: FloatArray
     Ys_l_full: FloatArray
-    # 缺少: hs_l, hs_g, rho_s_l, rho_s_g
 ```
 
-**指导文件**：remap 新暴露体积填充需要 `ρ_{s,l}^n, h_{s,l}^n, ρ_{s,g}^n, h_{s,g}^n`。`rho_s_l`/`rho_s_g` 标注为 "future only"，但 `hs_l`/`hs_g` 未做此标注。
+`InterfaceState` 只保存 `Ts` 和 `Ys`，不保存预计算的：
 
-**影响**：`InterfaceState` 不携带这两个字段，使 `remap.py` 结构上无法实现指导文件规定的新暴露体积填充方案，是**偏差 R-1 的结构根因**。
+- `hs_l` / `hs_g`
+- `rho_s_l` / `rho_s_g`
+
+**准确解读**：这不是 `R-1` 的唯一根因。因为指导文件允许两条实现路径：
+
+1. 在界面态对象里直接携带 `rho_s/h_s`
+2. 在 remap 阶段通过 `Ts/Ys + thermo/P_inf` 现场派生
+
+当前 `InterfaceState` 缺的是第一条路径所需的数据槽位；而 `R-1` 更深层的结构阻塞是 `R-3` 中 remap 主链拿不到派生所需依赖。
+
+**影响**：若希望把界面热力学参考态显式缓存进 state/types 层，当前类型定义仍不够用；但不能把它写成 `R-1` 的唯一结构根因。
 
 ---
 
 ## 八、`preprocess.py` — 发现 1 处轻微缺失
 
-参照：`unknowns_strategy_guideline_final.md`（初始状态物理合法性）
+参照：`paper_v1 Initialization and First-Step Guideline.md`
 
-### 偏差 P-1【轻微】初始质量分数未验证归一化
+### 偏差 P-1【轻微】初始质量分数向量未检查归一化
 
-**代码（`_build_full_mass_fraction_vector`，L265-278）：**
+**代码（`_build_full_mass_fraction_vector`）**：
+
 ```python
 vector = np.zeros(len(full_names), dtype=np.float64)
 for name, value in provided_mass_fractions.items():
     vector[full_name_to_index[name]] = float(value)
-return vector   # 未检查 Σ Y_i ≈ 1.0
+return vector
 ```
 
-**影响**：若配置文件中组分质量分数之和不为 1（如笔误），将被静默接受进入计算，产生不物理的初始状态。
+这里只检查了未知 species 名称，没有检查：
+
+- `sum(Y) ≈ 1`
+- 各分量是否落在合法范围
+
+**影响**：配置文件里若出现组分和不为 1 的笔误，会被静默接受进入初始化。
 
 ---
 
 ## 九、`config_loader.py` / `config_schema.py`
 
-`config_loader.py` 为纯基础设施代码，与架构规范一致 ✓。
+`config_loader.py` 为基础设施代码，本轮未发现偏差。
 
-`config_schema.py` 存在一处关联缺项：
+`config_schema.py` 存在三处 recovery 合同相关问题：
 
-### 偏差 CS-1【轻微，关联缺项】recovery 配置块 schema 缺少阈值参数约束
+### 偏差 CS-1【轻微】recovery schema 仍缺少指导文件要求的大量显式字段
 
-**现状**：`config_schema.py` 中 `recovery` 块的 schema 仅约束 `T_min_l`、`T_max_l`、`T_min_g`、`T_max_g`、`use_cantera_hpy_first`，与 `RecoveryConfig` 的现有字段保持一致。
+**先纠正事实描述**：当前 schema 并不是“只约束温区和布尔开关”，而是已经约束了：
 
-**影响**：偏差 S-6 要求在 `RecoveryConfig` 中新增的 `h_check_tol`、`Y_sum_tol`、`rho_min_l/g`、`Y_neg_clip_tol` 等参数，需同步在此 schema 中添加约束（类型、范围、默认值），否则配置文件中的对应字段将被 schema 校验拒绝。此项是 **S-6 修复的联动后置步骤**，S-6 完成后须同步处理。
+- `T_min_l`
+- `T_max_l`
+- `T_min_g`
+- `T_max_g`
+- `liq_h_inv_tol`
+- `liq_h_inv_max_iter`
+- `gas_h_inv_tol`
+- `gas_h_inv_max_iter`
+- `use_cantera_hpy_first`
+
+**真正问题**：相对于指导文件，schema 仍未覆盖以下应显式配置的 recovery 字段：
+
+- `rho_min`
+- `m_min`
+- `species_recovery_eps_abs`
+- `Y_sum_tol`
+- `Y_hard_tol`
+- `h_abs_tol`
+- `h_rel_tol`
+- `h_check_tol`
+- `T_step_tol`
+- `cp_min`
+- `liquid_h_inv_max_iter`
+
+**影响**：即使后续补齐 `RecoveryConfig`，schema 若不同步扩展，配置文件也无法合法表达指导文件要求的 recovery 合同。
+
+---
+
+### 偏差 CS-2【轻微，合同偏移】recovery 现有字段名与语义已经偏离指导文件正式命名
+
+**当前代码字段**：
+
+```text
+liq_h_inv_tol
+liq_h_inv_max_iter
+gas_h_inv_tol
+gas_h_inv_max_iter
+```
+
+**指导文件正式口径**强调的是：
+
+```text
+h_abs_tol
+h_rel_tol
+h_check_tol
+liquid_h_inv_max_iter
+gas_h_inv_max_iter
+cp_min
+```
+
+也就是说，当前问题不只是“少字段”，还包括：
+
+- 已有字段名与指导文件命名不一致
+- 液相/气相容差被实现成另一套语义
+- 指导文件要求的通用焓容差体系未被保留
+
+**影响**：后续若只做“补字段”而不清理命名与语义合同，`RecoveryConfig`、schema、配置样例和指导文件仍会长期错位。
+
+---
+
+### 偏差 CS-3【轻微，内部合同不一致】schema 与 `RecoveryConfig` 对焓反演容差下界的约束不一致
+
+**当前 schema 约束**：
+
+```python
+SchemaField("liq_h_inv_tol", float, required=True, min_value=0.0)
+SchemaField("gas_h_inv_tol", float, required=True, min_value=0.0)
+```
+
+这意味着 `config_schema.py` 会放行：
+
+- `liq_h_inv_tol = 0.0`
+- `gas_h_inv_tol = 0.0`
+
+**但 `RecoveryConfig` dataclass 约束**：
+
+```python
+_check_positive("liq_h_inv_tol", self.liq_h_inv_tol)
+_check_positive("gas_h_inv_tol", self.gas_h_inv_tol)
+```
+
+`_check_positive()` 要求的是严格正值，因此 `0.0` 会在 schema 通过后、构造 `RecoveryConfig` 时再次被拒绝。
+
+**影响**：这是 `core` 内部的配置合同自相矛盾。表现上会变成“schema 验证成功，但初始化阶段失败”，增加排障成本，也使 schema 失去作为前置合同检查的完整性。
 
 ---
 
 ## 十、偏差汇总与优先级
 
-> **说明**：初版 S-1（纯二分）为误判，已撤销，不计入下表。S-2/S-3 为更正后的描述。S-6/S-7/S-8/CS-1 为新增项。
-
 | 编号 | 文件 | 严重性 | 描述 | 修复依赖 |
 |------|------|--------|------|---------|
-| R-1 | `remap.py:287-314` | **严重** | 新暴露体积用端格代替界面态（ρ_{s,l}^n, h_{s,l}^n）| 先补 T-1 |
-| S-6 | `state_recovery.py` | **严重（结构）** | `RecoveryConfig` 缺 `h_check_tol`/`Y_sum_tol`/`rho_min` 等阈值参数 | 独立 |
-| S-1 | `state_recovery.py` | 中等 | 气相 HPY 主线依赖 thermo 隐式属性 `reference_pressure`，缺显式 `P_inf` 接口 | 独立 |
-| S-2 | `state_recovery.py` | 中等 | 焓反演初始猜值仅为 sweep 内相邻格，缺时间层 `T_prev` | 先补 S-8 |
-| S-3 | `state_recovery.py` | 中等 | 无组分轻微偏差修正规则，直接抛异常 | 先补 S-6 |
-| S-4 | `state_recovery.py:256-273` | 中等 | 缺前向一致性校验 h_recomputed vs h_target | 先补 S-6 |
-| S-5 | `state_recovery.py:269` | 中等 | `Xg_full` 恒为 None，气相摩尔分数未恢复 | 独立 |
-| S-7 | `state_recovery.py` | 中等 | public API `recover_state_from_contents` 丢弃 recovery diagnostics | 独立 |
-| S-8 | `state_recovery.py` | 中等 | API 签名缺显式 `T_prev` 参数，历史温度优先策略无法注入 | 独立 |
-| R-2 | `remap.py:366-383` | 轻微 | 诊断仅报绝对值，未计算相对守恒误差 | 独立 |
-| L-1 | `layout.py:303-307` | 轻微 | Phase B 界面块 Y_{s,l} 排末尾而非 T_s 之前 | 独立 |
-| T-1 | `types.py:868-888` | 轻微（根因）| `InterfaceState` 缺 `hs_l`/`hs_g` 字段 | — |
-| P-1 | `preprocess.py:265-278` | 轻微 | 初始 Y 向量未校验 Σ=1 | 独立 |
-| CS-1 | `config_schema.py` | 轻微（联动）| recovery schema 缺新增阈值参数约束 | 先补 S-6 |
+| R-1 | `remap.py` | **严重** | 新暴露体积补全仍取 bulk 端格态，不是旧界面态 | 先补 `R-3` 或等价通道 |
+| S-6 | `types.py` / `state_recovery.py` | **严重（结构）** | `RecoveryConfig` 相比指导文件仍缺大量恢复/校验参数 | 联动 `CS-1`、`CS-2` |
+| R-3 | `remap.py` | 中等 | remap 主链缺 thermo / `P_inf` / 等价界面热力学参考态通道 | 独立 |
+| S-1 | `state_recovery.py` | 中等 | 气相 HPY 分支依赖 thermo 隐式 pressure 来源 | 独立 |
+| S-2 | `state_recovery.py` | 中等 | 未接入时间层历史温度 `T_prev`，仅 sweep 内传 `T_hint` | 独立 |
+| S-3 | `state_recovery.py` | 中等 | minor-fix 未实现，轻微组分偏差直接 hard fail | 先补 `S-6` |
+| S-4 | `state_recovery.py` | 中等 | 缺前向焓一致性校验 | 先补 `S-6` |
+| S-5 | `state_recovery.py` | 中等 | `Xg_full` 恒为 `None` | 独立 |
+| S-7 | `state_recovery.py` | 中等 | public API 未向上层暴露 recovery diagnostics | 独立 |
+| R-2 | `remap.py` | 轻微 | 诊断未计算相对守恒误差 | 独立 |
+| L-1 | `layout.py` | 轻微 | Phase B 界面块顺序不符 | 独立 |
+| T-1 | `types.py` | 轻微 | `InterfaceState` 未携带预计算界面热力学参考态 | 与 `R-3` 相关 |
+| P-1 | `preprocess.py` | 轻微 | 初始 `Y` 向量未校验归一化 | 独立 |
+| CS-1 | `config_schema.py` | 轻微 | recovery schema 缺大量指导文件字段 | 先补 `S-6` |
+| CS-2 | `config_schema.py` / `types.py` | 轻微 | recovery 字段命名与语义偏离指导文件合同 | 先补 `S-6` |
+| CS-3 | `config_schema.py` / `types.py` | 轻微 | schema 允许 `liq_h_inv_tol/gas_h_inv_tol = 0.0`，但 `RecoveryConfig` 要求严格正值 | 独立 |
 
 ### 推荐修复顺序
 
-1. **S-6**：补全 `RecoveryConfig` 阈值参数组（解锁 S-3/S-4 修复）
-2. **CS-1**：同步在 `config_schema.py` recovery 块中添加对应 schema 约束
-3. **T-1**：在 `InterfaceState` 补充 `hs_l`、`hs_g`（解锁 R-1）
-4. **R-1**：remap 新暴露体积改用界面态而非端格
-5. **S-8**：`recover_state_from_contents` 签名添加 `T_prev` 可选参数（解锁 S-2 修复）
-6. **S-1**：将 P_inf 作为显式参数纳入 recovery API，消除对 thermo 隐式属性的依赖
-7. **S-7**：public API 返回值改为 `(State, RecoveryDiagnostics)`
-8. **S-5**：气相恢复后计算并填充 `Xg_full`
-9. **S-4**：反演后添加前向一致性校验
-10. **S-3**、**S-2**：组分修正规则与历史温度初始猜值（可同步实现）
-11. **R-2**、**P-1**、**L-1**：轻微修复，随版本迭代补充
+1. **S-6 + CS-1 + CS-2**：先统一 recovery 配置合同、字段名与 schema
+2. **CS-3**：消除 schema 与 dataclass 的容差下界冲突
+3. **R-3**：给 remap 主路径补入 thermo / `P_inf` 或等价界面热力学参考态通道
+4. **R-1**：把 newly exposed subvolume 补全从 bulk 端格切换到旧界面态
+5. **S-7**：补 recovery diagnostics 的上行暴露通道
+6. **S-5**：恢复并填充 `Xg_full`
+7. **S-4 + S-3**：加前向焓一致性校验与 minor-fix
+8. **S-2 + S-1**：补历史温度初值通道，并显式化 HPY pressure 来源
+9. **R-2 + P-1 + L-1 + T-1**：完成轻微结构与诊断收尾
