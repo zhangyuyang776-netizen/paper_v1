@@ -42,14 +42,11 @@ def test_valid_config_constructs() -> None:
     assert cfg.use_cantera_hpy_first is True
 
 
-def test_backward_compat_aliases() -> None:
+def test_canonical_tolerance_fields() -> None:
+    """Verify the canonical field names are accessible directly."""
     cfg = make_valid_recovery_config(h_abs_tol=1.0e-9, liquid_h_inv_max_iter=75)
-    # liq_h_inv_tol / gas_h_inv_tol → h_abs_tol
-    assert cfg.liq_h_inv_tol == cfg.h_abs_tol == 1.0e-9
-    assert cfg.gas_h_inv_tol == cfg.h_abs_tol == 1.0e-9
-    # liq_h_inv_max_iter → liquid_h_inv_max_iter
-    assert cfg.liq_h_inv_max_iter == cfg.liquid_h_inv_max_iter == 75
-    # gas_h_inv_max_iter is a direct field
+    assert cfg.h_abs_tol == 1.0e-9
+    assert cfg.liquid_h_inv_max_iter == 75
     assert cfg.gas_h_inv_max_iter == 50
 
 

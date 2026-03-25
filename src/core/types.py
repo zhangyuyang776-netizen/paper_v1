@@ -444,28 +444,6 @@ class RecoveryConfig:
                 "the gas-phase HPY-first path is mandatory"
             )
 
-    # ---------------------------------------------------------------------------
-    # Backward-compatibility aliases for core.state_recovery (temporary bridge).
-    # These map old field names used in state_recovery.py to the new canonical
-    # field names.  Remove once state_recovery.py is updated in the next round.
-    # ---------------------------------------------------------------------------
-
-    @property
-    def liq_h_inv_tol(self) -> float:
-        """Temporary compat alias → h_abs_tol (for core.state_recovery)."""
-        return self.h_abs_tol
-
-    @property
-    def gas_h_inv_tol(self) -> float:
-        """Temporary compat alias → h_abs_tol (for core.state_recovery)."""
-        return self.h_abs_tol
-
-    @property
-    def liq_h_inv_max_iter(self) -> int:
-        """Temporary compat alias → liquid_h_inv_max_iter (for core.state_recovery)."""
-        return self.liquid_h_inv_max_iter
-
-
 @dataclass(slots=True, kw_only=True, frozen=True)
 class DiagnosticsConfig:
     """Runtime logging and diagnostics switches."""
@@ -1338,6 +1316,31 @@ class StepContext:
         return self.accepted_mesh
 
 
+@dataclass(slots=True, kw_only=True, frozen=True)
+class RecoveryTemperatureSeeds:
+    """Optional per-cell temperature hints to seed enthalpy inversion.
+
+    Typically populated from the recovered temperatures of the previous timestep.
+    Either field may be None when seeds are unavailable for that phase.
+    """
+
+    T_l: FloatArray | None = None
+    T_g: FloatArray | None = None
+
+
+@dataclass(slots=True, kw_only=True, frozen=True)
+class StateRecoveryResult:
+    """Result of a detailed state recovery call.
+
+    Pairs the recovered :class:`State` with the per-phase diagnostics dict
+    produced by the inversion loop (inversion modes, effective temperature
+    bounds, HPY skip reasons, etc.).
+    """
+
+    state: State
+    diagnostics: dict  # dict[str, object]
+
+
 __all__ = [
     "CasePaths",
     "ConservativeContents",
@@ -1361,8 +1364,10 @@ __all__ = [
     "PathLike",
     "Props",
     "RecoveryConfig",
+    "RecoveryTemperatureSeeds",
     "RegionSlices",
     "RunConfig",
+    "StateRecoveryResult",
     "SpeciesControlConfig",
     "SpeciesMaps",
     "StateTransferRecord",

@@ -4,7 +4,16 @@ from typing import Protocol
 
 import numpy as np
 
-from .types import ConservativeContents, InterfaceState, Mesh1D, RecoveryConfig, SpeciesMaps, State
+from .types import (
+    ConservativeContents,
+    InterfaceState,
+    Mesh1D,
+    RecoveryConfig,
+    RecoveryTemperatureSeeds,
+    SpeciesMaps,
+    State,
+    StateRecoveryResult,
+)
 
 
 RECOVERY_MASS_TOL = 1.0e-12
@@ -50,8 +59,9 @@ def _recover_full_mass_fractions(
     *,
     n_full: int,
     single_component_name: str | None = None,
+    species_recovery_eps_abs: float,
 ) -> np.ndarray:
-    species_mass = np.asarray(species_mass, dtype=np.float64)
+    species_mass = np.asarray(species_mass, dtype=np.float64).copy()
     mass = np.asarray(mass, dtype=np.float64)
     if mass.ndim != 1:
         raise StateRecoveryError("mass must be one-dimensional")
@@ -61,8 +71,27 @@ def _recover_full_mass_fractions(
         raise StateRecoveryError("species_mass shape must be (n_cells, n_full)")
     if np.any(mass <= 0.0):
         raise StateRecoveryError("mass must be strictly positive for species recovery")
-    if np.any(species_mass < 0.0):
-        raise StateRecoveryError("species_mass must be non-negative")
+
+    # S-3: minor-fix / hard-fail for negative species masses.
+    # Values within species_recovery_eps_abs (relative to cell mass) are clipped
+    # to zero and the row is renormalized.  Larger negatives are hard failures.
+    for i in range(species_mass.shape[0]):
+        row = species_mass[i, :]
+        neg_mask = row < 0.0
+        if np.any(neg_mask):
+            if np.any(np.abs(row[neg_mask]) > mass[i] * species_recovery_eps_abs):
+                raise StateRecoveryError(
+                    f"species_mass[{i}] has negative values exceeding "
+                    f"species_recovery_eps_abs tolerance (hard-fail)"
+                )
+            # Minor fix: clip and renormalize so the row sum equals mass[i].
+            row = np.clip(row, 0.0, None)
+            row_sum = float(np.sum(row))
+            if row_sum <= 0.0:
+                raise StateRecoveryError(
+                    f"species_mass[{i}] is all zero after minor-fix clip"
+                )
+            species_mass[i, :] = row * (mass[i] / row_sum)
 
     species_sum = np.sum(species_mass, axis=1)
     diff = np.abs(species_sum - mass)
@@ -333,10 +362,19 @@ def _invert_liquid_h_to_T_safeguarded(
         thermo=liquid_thermo,
         T_low=bounds[0],
         T_high=bounds[1],
-        tol=float(recovery_cfg.liq_h_inv_tol),
-        max_iter=int(recovery_cfg.liq_h_inv_max_iter),
+        tol=float(recovery_cfg.h_abs_tol),
+        max_iter=int(recovery_cfg.liquid_h_inv_max_iter),
         T_hint=T_hint,
     )
+    # S-4: forward enthalpy consistency check.
+    h_fwd = _call_thermo_enthalpy(liquid_thermo, T=T, y_full=y_full)
+    abs_err = abs(h_fwd - target_h)
+    ref = max(abs(target_h), 1.0)
+    if abs_err > float(recovery_cfg.h_check_tol) * ref:
+        raise StateRecoveryError(
+            f"liquid forward enthalpy check failed: |h_fwd - h_target| = {abs_err:.3e} "
+            f"> h_check_tol * ref = {float(recovery_cfg.h_check_tol) * ref:.3e}"
+        )
     return T, mode, bounds
 
 
@@ -375,6 +413,7 @@ def _invert_gas_h_to_T_hpy_first(
 ) -> tuple[float, str, tuple[float, float], str | None]:
     bounds = _get_effective_gas_temperature_bounds(recovery_cfg, gas_thermo, y_full)
     skipped_reason: str | None = None
+
     if recovery_cfg.use_cantera_hpy_first and pressure is not None:
         try:
             T_hpy = _call_temperature_from_hpy(
@@ -384,22 +423,40 @@ def _invert_gas_h_to_T_hpy_first(
                 pressure=pressure,
             )
             if np.isfinite(T_hpy) and bounds[0] <= T_hpy <= bounds[1]:
-                return float(T_hpy), "hpy", bounds, None
+                # S-4: forward check before accepting the HPY result.
+                h_fwd = _call_thermo_enthalpy(gas_thermo, T=T_hpy, y_full=y_full, pressure=pressure)
+                abs_err = abs(h_fwd - target_h)
+                ref = max(abs(target_h), 1.0)
+                if abs_err <= float(recovery_cfg.h_check_tol) * ref:
+                    return float(T_hpy), "hpy", bounds, None
+                else:
+                    skipped_reason = "hpy_check_failed"
         except Exception:
             skipped_reason = "hpy_call_failed"
     elif recovery_cfg.use_cantera_hpy_first and pressure is None:
         skipped_reason = "missing_reference_pressure"
+
+    # Newton fallback path.
     T, _mode = _invert_temperature_safeguarded_newton(
         target_h=target_h,
         y_full=y_full,
         thermo=gas_thermo,
         T_low=bounds[0],
         T_high=bounds[1],
-        tol=float(recovery_cfg.gas_h_inv_tol),
+        tol=float(recovery_cfg.h_abs_tol),
         max_iter=int(recovery_cfg.gas_h_inv_max_iter),
         pressure=pressure,
         T_hint=T_hint,
     )
+    # S-4: forward enthalpy consistency check for Newton path.
+    h_fwd = _call_thermo_enthalpy(gas_thermo, T=T, y_full=y_full, pressure=pressure)
+    abs_err = abs(h_fwd - target_h)
+    ref = max(abs(target_h), 1.0)
+    if abs_err > float(recovery_cfg.h_check_tol) * ref:
+        raise StateRecoveryError(
+            f"gas forward enthalpy check failed: |h_fwd - h_target| = {abs_err:.3e} "
+            f"> h_check_tol * ref = {float(recovery_cfg.h_check_tol) * ref:.3e}"
+        )
     return T, "fallback_scalar", bounds, skipped_reason
 
 
@@ -435,6 +492,8 @@ def _recover_liquid_phase_state_with_diagnostics(
     species_maps: SpeciesMaps,
     recovery_cfg: RecoveryConfig,
     liquid_thermo: LiquidThermoProtocol,
+    *,
+    temperature_seeds: RecoveryTemperatureSeeds | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict[str, object]]:
     liq_volumes = mesh.volumes[mesh.region_slices.liq]
     rho_l = _recover_density(contents.mass_l, liq_volumes)
@@ -443,14 +502,21 @@ def _recover_liquid_phase_state_with_diagnostics(
         contents.mass_l,
         n_full=species_maps.n_liq_full,
         single_component_name=species_maps.liq_full_names[0] if species_maps.n_liq_full == 1 else None,
+        species_recovery_eps_abs=recovery_cfg.species_recovery_eps_abs,
     )
     hl = _recover_specific_enthalpy(contents.enthalpy_l, contents.mass_l)
 
     Tl = np.zeros_like(hl)
     inversion_modes: list[str] = []
     bounds_list: list[tuple[float, float]] = []
-    T_hint: float | None = None
+    # S-2: T_hint priority chain: seed[i] > rolling hint from previous cell > None.
+    seed_T_l = temperature_seeds.T_l if temperature_seeds is not None else None
+    T_hint_rolling: float | None = None
     for i, h_i in enumerate(hl):
+        if seed_T_l is not None and i < len(seed_T_l) and np.isfinite(float(seed_T_l[i])):
+            T_hint = float(seed_T_l[i])
+        else:
+            T_hint = T_hint_rolling
         T_i, mode_i, bounds_i = _invert_liquid_h_to_T_safeguarded(
             target_h=float(h_i),
             y_full=Yl_full[i, :],
@@ -459,10 +525,10 @@ def _recover_liquid_phase_state_with_diagnostics(
             T_hint=T_hint,
         )
         Tl[i] = T_i
-        T_hint = T_i
+        T_hint_rolling = T_i
         inversion_modes.append(mode_i)
         bounds_list.append(bounds_i)
-    diag = {
+    diag: dict[str, object] = {
         "liq_T_bounds_effective": bounds_list,
         "liq_inversion_mode": inversion_modes[0] if len(set(inversion_modes)) == 1 else inversion_modes,
         "n_liq_cells": int(mesh.n_liq),
@@ -495,6 +561,9 @@ def _recover_gas_phase_state_with_diagnostics(
     species_maps: SpeciesMaps,
     recovery_cfg: RecoveryConfig,
     gas_thermo: GasThermoProtocol,
+    *,
+    gas_pressure: float | None = None,
+    temperature_seeds: RecoveryTemperatureSeeds | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict[str, object]]:
     gas_volumes = mesh.volumes[mesh.region_slices.gas_all]
     rho_g = _recover_density(contents.mass_g, gas_volumes)
@@ -502,16 +571,35 @@ def _recover_gas_phase_state_with_diagnostics(
         contents.species_mass_g,
         contents.mass_g,
         n_full=species_maps.n_gas_full,
+        species_recovery_eps_abs=recovery_cfg.species_recovery_eps_abs,
     )
     hg = _recover_specific_enthalpy(contents.enthalpy_g, contents.mass_g)
+
+    # S-5: compute mole fractions if gas_thermo provides mole_fractions_from_mass.
+    mole_fractions_fn = getattr(gas_thermo, "mole_fractions_from_mass", None)
+    Xg_full: np.ndarray | None
+    if callable(mole_fractions_fn):
+        try:
+            Xg_full = np.asarray(mole_fractions_fn(Yg_full), dtype=np.float64)
+        except Exception:
+            Xg_full = None
+    else:
+        Xg_full = None
 
     Tg = np.zeros_like(hg)
     inversion_modes: list[str] = []
     bounds_list: list[tuple[float, float]] = []
     skipped_reasons: list[str] = []
-    pressure = _infer_gas_recovery_pressure(gas_thermo)
-    T_hint: float | None = None
+    # S-1: use explicit gas_pressure; fall back to inference for legacy callers.
+    pressure = gas_pressure if gas_pressure is not None else _infer_gas_recovery_pressure(gas_thermo)
+    # S-2: T_hint priority chain: seed[i] > rolling hint from previous cell > None.
+    seed_T_g = temperature_seeds.T_g if temperature_seeds is not None else None
+    T_hint_rolling: float | None = None
     for i, h_i in enumerate(hg):
+        if seed_T_g is not None and i < len(seed_T_g) and np.isfinite(float(seed_T_g[i])):
+            T_hint = float(seed_T_g[i])
+        else:
+            T_hint = T_hint_rolling
         T_i, mode_i, bounds_i, skipped_reason_i = _invert_gas_h_to_T_hpy_first(
             target_h=float(h_i),
             y_full=Yg_full[i, :],
@@ -521,17 +609,18 @@ def _recover_gas_phase_state_with_diagnostics(
             T_hint=T_hint,
         )
         Tg[i] = T_i
-        T_hint = T_i
+        T_hint_rolling = T_i
         inversion_modes.append(mode_i)
         bounds_list.append(bounds_i)
         if skipped_reason_i is not None:
             skipped_reasons.append(skipped_reason_i)
-    diag = {
+    diag: dict[str, object] = {
         "gas_T_bounds_effective": bounds_list,
         "gas_inversion_mode": inversion_modes[0] if len(set(inversion_modes)) == 1 else inversion_modes,
         "n_gas_cells": int(mesh.n_gas),
         "min_Tg": float(np.min(Tg)) if Tg.size else float("nan"),
         "max_Tg": float(np.max(Tg)) if Tg.size else float("nan"),
+        "Xg_full": Xg_full,
     }
     if skipped_reasons:
         diag["gas_hpy_skipped_reason"] = skipped_reasons[0] if len(set(skipped_reasons)) == 1 else skipped_reasons
@@ -597,6 +686,8 @@ def _recover_state_from_contents_internal(
     liquid_thermo: LiquidThermoProtocol,
     gas_thermo: GasThermoProtocol,
     interface_seed: InterfaceState,
+    gas_pressure: float | None = None,
+    temperature_seeds: RecoveryTemperatureSeeds | None = None,
     time: float | None = None,
     state_id: str | None = None,
 ) -> tuple[State, dict[str, object]]:
@@ -606,6 +697,7 @@ def _recover_state_from_contents_internal(
         species_maps,
         recovery_cfg,
         liquid_thermo,
+        temperature_seeds=temperature_seeds,
     )
     rho_g, Yg_full, hg, Tg, gas_diag = _recover_gas_phase_state_with_diagnostics(
         contents,
@@ -613,7 +705,12 @@ def _recover_state_from_contents_internal(
         species_maps,
         recovery_cfg,
         gas_thermo,
+        gas_pressure=gas_pressure,
+        temperature_seeds=temperature_seeds,
     )
+
+    # S-5: extract Xg_full from gas diagnostics before merging into the top-level dict.
+    Xg_full: np.ndarray | None = gas_diag.pop("Xg_full", None)  # type: ignore[assignment]
 
     state = State(
         Tl=Tl,
@@ -625,7 +722,7 @@ def _recover_state_from_contents_internal(
         rho_g=rho_g,
         hl=hl,
         hg=hg,
-        Xg_full=None,
+        Xg_full=Xg_full,
         time=time,
         state_id=state_id,
     )
@@ -674,8 +771,59 @@ def recover_state_from_contents(
     return state
 
 
-def summarize_recovery_diagnostics(state: State) -> dict[str, float]:
-    return {
+def recover_state_from_contents_detailed(
+    *,
+    contents: ConservativeContents,
+    mesh: Mesh1D,
+    species_maps: SpeciesMaps,
+    recovery_cfg: RecoveryConfig,
+    liquid_thermo: LiquidThermoProtocol,
+    gas_thermo: GasThermoProtocol,
+    interface_seed: InterfaceState,
+    gas_pressure: float,
+    temperature_seeds: RecoveryTemperatureSeeds | None = None,
+    time: float | None = None,
+    state_id: str | None = None,
+) -> StateRecoveryResult:
+    """Recover primitive state and return full per-phase diagnostics.
+
+    Unlike :func:`recover_state_from_contents`, this function requires an
+    explicit ``gas_pressure`` (S-1) and returns a :class:`StateRecoveryResult`
+    that exposes the full diagnostics dict alongside the recovered state.
+    ``temperature_seeds`` may be supplied to seed the enthalpy inversion with
+    temperature hints from the previous timestep (S-2).
+    """
+    state, diagnostics = _recover_state_from_contents_internal(
+        contents=contents,
+        mesh=mesh,
+        species_maps=species_maps,
+        recovery_cfg=recovery_cfg,
+        liquid_thermo=liquid_thermo,
+        gas_thermo=gas_thermo,
+        interface_seed=interface_seed,
+        gas_pressure=gas_pressure,
+        temperature_seeds=temperature_seeds,
+        time=time,
+        state_id=state_id,
+    )
+    return StateRecoveryResult(state=state, diagnostics=diagnostics)
+
+
+def summarize_recovery_diagnostics(
+    state_or_result: "State | StateRecoveryResult",
+) -> dict[str, object]:
+    """Return a flat summary dict from a recovered state or detailed result.
+
+    When passed a :class:`StateRecoveryResult` the summary is enriched with
+    inversion-mode and HPY diagnostics available from the detailed recovery.
+    """
+    if isinstance(state_or_result, StateRecoveryResult):
+        state = state_or_result.state
+        diag: dict[str, object] = state_or_result.diagnostics
+    else:
+        state = state_or_result
+        diag = {}
+    result: dict[str, object] = {
         "min_Tl": float(np.min(state.Tl)),
         "max_Tl": float(np.max(state.Tl)),
         "min_Tg": float(np.min(state.Tg)),
@@ -683,6 +831,10 @@ def summarize_recovery_diagnostics(state: State) -> dict[str, float]:
         "min_rho_l": float(np.min(state.rho_l)) if state.rho_l is not None else float("nan"),
         "min_rho_g": float(np.min(state.rho_g)) if state.rho_g is not None else float("nan"),
     }
+    for key in ("liq_inversion_mode", "gas_inversion_mode", "gas_hpy_skipped_reason"):
+        if key in diag:
+            result[key] = diag[key]
+    return result
 
 
 __all__ = [
@@ -690,5 +842,6 @@ __all__ = [
     "LiquidThermoProtocol",
     "StateRecoveryError",
     "recover_state_from_contents",
+    "recover_state_from_contents_detailed",
     "summarize_recovery_diagnostics",
 ]
