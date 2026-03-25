@@ -383,29 +383,87 @@ class InnerSolverConfig:
 
 @dataclass(slots=True, kw_only=True, frozen=True)
 class RecoveryConfig:
-    """Bounds and tolerances for state recovery / enthalpy inversion."""
+    """Bounds and tolerances for state recovery / enthalpy inversion.
 
+    Field set matches the guideline's formal recovery contract.
+    """
+
+    # --- density / mass floor ---
+    rho_min: float
+    m_min: float
+
+    # --- species tolerances ---
+    species_recovery_eps_abs: float
+    Y_sum_tol: float
+    Y_hard_tol: float
+
+    # --- enthalpy inversion tolerances ---
+    h_abs_tol: float
+    h_rel_tol: float
+    h_check_tol: float
+    T_step_tol: float
+
+    # --- temperature bounds ---
     T_min_l: float
     T_max_l: float
     T_min_g: float
     T_max_g: float
-    liq_h_inv_tol: float
-    liq_h_inv_max_iter: int
-    gas_h_inv_tol: float
+
+    # --- iteration limits and thermo floor ---
+    liquid_h_inv_max_iter: int
+    cp_min: float
     gas_h_inv_max_iter: int
+
+    # --- algorithm switch ---
     use_cantera_hpy_first: bool
 
     def __post_init__(self) -> None:
+        _check_positive("rho_min", self.rho_min)
+        _check_positive("m_min", self.m_min)
+        _check_positive("species_recovery_eps_abs", self.species_recovery_eps_abs)
+        _check_positive("Y_sum_tol", self.Y_sum_tol)
+        _check_positive("Y_hard_tol", self.Y_hard_tol)
+        _check_positive("h_abs_tol", self.h_abs_tol)
+        _check_positive("h_rel_tol", self.h_rel_tol)
+        _check_positive("h_check_tol", self.h_check_tol)
+        _check_positive("T_step_tol", self.T_step_tol)
+        _check_positive("cp_min", self.cp_min)
+        _check_positive("T_min_l", self.T_min_l)
         if self.T_max_l <= self.T_min_l:
             raise ValueError("Require T_max_l > T_min_l")
+        _check_positive("T_min_g", self.T_min_g)
         if self.T_max_g <= self.T_min_g:
             raise ValueError("Require T_max_g > T_min_g")
-        _check_positive("liq_h_inv_tol", self.liq_h_inv_tol)
-        _check_positive("gas_h_inv_tol", self.gas_h_inv_tol)
-        if self.liq_h_inv_max_iter < 1:
-            raise ValueError("liq_h_inv_max_iter must be >= 1")
+        if self.liquid_h_inv_max_iter < 1:
+            raise ValueError("liquid_h_inv_max_iter must be >= 1")
         if self.gas_h_inv_max_iter < 1:
             raise ValueError("gas_h_inv_max_iter must be >= 1")
+        if not self.use_cantera_hpy_first:
+            raise ValueError(
+                "use_cantera_hpy_first must be True per recovery contract; "
+                "the gas-phase HPY-first path is mandatory"
+            )
+
+    # ---------------------------------------------------------------------------
+    # Backward-compatibility aliases for core.state_recovery (temporary bridge).
+    # These map old field names used in state_recovery.py to the new canonical
+    # field names.  Remove once state_recovery.py is updated in the next round.
+    # ---------------------------------------------------------------------------
+
+    @property
+    def liq_h_inv_tol(self) -> float:
+        """Temporary compat alias → h_abs_tol (for core.state_recovery)."""
+        return self.h_abs_tol
+
+    @property
+    def gas_h_inv_tol(self) -> float:
+        """Temporary compat alias → h_abs_tol (for core.state_recovery)."""
+        return self.h_abs_tol
+
+    @property
+    def liq_h_inv_max_iter(self) -> int:
+        """Temporary compat alias → liquid_h_inv_max_iter (for core.state_recovery)."""
+        return self.liquid_h_inv_max_iter
 
 
 @dataclass(slots=True, kw_only=True, frozen=True)

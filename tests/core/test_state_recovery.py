@@ -56,13 +56,21 @@ def make_dummy_mesh(n_liq: int, n_gas: int) -> Mesh1D:
 
 def make_recovery_config() -> RecoveryConfig:
     return RecoveryConfig(
+        rho_min=1.0e-12,
+        m_min=1.0e-20,
+        species_recovery_eps_abs=1.0e-14,
+        Y_sum_tol=1.0e-10,
+        Y_hard_tol=1.0e-6,
+        h_abs_tol=1.0e-12,
+        h_rel_tol=1.0e-12,
+        h_check_tol=1.0e-8,
+        T_step_tol=1.0e-8,
         T_min_l=200.0,
         T_max_l=800.0,
         T_min_g=200.0,
         T_max_g=4000.0,
-        liq_h_inv_tol=1.0e-12,
-        liq_h_inv_max_iter=100,
-        gas_h_inv_tol=1.0e-12,
+        liquid_h_inv_max_iter=100,
+        cp_min=1.0,
         gas_h_inv_max_iter=100,
         use_cantera_hpy_first=True,
     )
