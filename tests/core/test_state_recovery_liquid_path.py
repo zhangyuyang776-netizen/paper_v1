@@ -137,7 +137,7 @@ def test_liquid_inversion_forward_check_passes() -> None:
     h_target = thermo.enthalpy_mass(T_target, np.array([1.0]))
     y_full = np.array([1.0])
 
-    T, mode, bounds, h_fwd_err = _invert_liquid_h_to_T_safeguarded(
+    T, mode, bounds, h_fwd_err, _ = _invert_liquid_h_to_T_safeguarded(
         target_h=h_target,
         y_full=y_full,
         recovery_cfg=cfg,

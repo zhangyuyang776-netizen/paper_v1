@@ -1333,6 +1333,11 @@ class RecoveryTemperatureSeeds:
                 a = np.asarray(arr, dtype=np.float64)
                 if a.ndim != 1:
                     raise ValueError(f"RecoveryTemperatureSeeds.{name} must be 1-D, got ndim={a.ndim}")
+                if np.any(np.isinf(a)):
+                    raise ValueError(
+                        f"RecoveryTemperatureSeeds.{name} must not contain ±inf; "
+                        f"use NaN to mark absent seeds"
+                    )
                 object.__setattr__(self, name, a)
 
 

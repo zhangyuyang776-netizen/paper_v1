@@ -50,6 +50,11 @@ class HPYThermo(FakeLinearGasThermo):
     def temperature_from_hpy(self, h: float, Y_full: np.ndarray, pressure: float) -> float:
         return (float(h) - self.h_ref) / self.cp
 
+    @property
+    def molecular_weights(self) -> np.ndarray:
+        # N2=28.014, O2=31.998 (g/mol) — matches gas_full_names in make_species_maps().
+        return np.array([28.014, 31.998])
+
 
 class MoleFractionThermo(HPYThermo):
     """Also provides mole_fractions_from_mass (returns a mock mole fraction matrix)."""
@@ -164,7 +169,7 @@ def test_gas_hpy_path_taken_and_forward_check_passes() -> None:
     h_target = thermo.enthalpy_mass(T_target, np.array([0.79, 0.21]))
     y_full = np.array([0.79, 0.21])
 
-    T, mode, bounds, skipped, h_fwd_err = _invert_gas_h_to_T_hpy_first(
+    T, mode, bounds, skipped, h_fwd_err, _ = _invert_gas_h_to_T_hpy_first(
         target_h=h_target,
         y_full=y_full,
         recovery_cfg=cfg,
@@ -204,7 +209,7 @@ def test_gas_hpy_check_failure_falls_back_to_newton() -> None:
     h_target = thermo.enthalpy_mass(T_target, np.array([0.79, 0.21]))
     y_full = np.array([0.79, 0.21])
 
-    T, mode, bounds, skipped, h_fwd_err = _invert_gas_h_to_T_hpy_first(
+    T, mode, bounds, skipped, h_fwd_err, _ = _invert_gas_h_to_T_hpy_first(
         target_h=h_target,
         y_full=y_full,
         recovery_cfg=cfg,
@@ -229,7 +234,7 @@ def test_gas_missing_pressure_falls_back_to_newton() -> None:
     h_target = thermo.enthalpy_mass(T_target, np.array([0.79, 0.21]))
     y_full = np.array([0.79, 0.21])
 
-    T, mode, bounds, skipped, h_fwd_err = _invert_gas_h_to_T_hpy_first(
+    T, mode, bounds, skipped, h_fwd_err, _ = _invert_gas_h_to_T_hpy_first(
         target_h=h_target,
         y_full=y_full,
         recovery_cfg=cfg,
@@ -333,7 +338,13 @@ def test_xg_full_populated_when_method_available() -> None:
     assert result.state.Xg_full.shape == (n_gas, species_maps.n_gas_full)
 
 
-def test_xg_full_is_none_when_method_unavailable() -> None:
+def test_xg_full_recovery_failure_raises_in_detailed_api() -> None:
+    """recover_state_from_contents_detailed raises when Xg_full cannot be recovered.
+
+    A gas thermo without mole_fractions_from_mass AND without molecular_weights
+    leaves Xg_full=None.  The detailed API must not silently return None but
+    must raise StateRecoveryError instead (S-5 no-silent-failure contract).
+    """
     n_liq, n_gas = 1, 2
     T_l = np.array([300.0])
     T_g = np.array([900.0, 920.0])
@@ -342,7 +353,12 @@ def test_xg_full_is_none_when_method_unavailable() -> None:
     species_maps = make_species_maps()
     contents = make_contents(n_liq, n_gas, cp_l, cp_g, T_l, T_g)
     cfg = make_recovery_cfg()
-    gas_thermo = HPYThermo(cp=cp_g)  # no mole_fractions_from_mass
+
+    class NoMWThermo(FakeLinearGasThermo):
+        """HPY-capable thermo with no mole_fractions_from_mass and no molecular_weights."""
+
+        def temperature_from_hpy(self, h: float, Y_full: np.ndarray, pressure: float) -> float:
+            return (float(h) - self.h_ref) / self.cp
 
     class SimpleLiqThermo:
         def __init__(self, cp: float) -> None:
@@ -354,17 +370,17 @@ def test_xg_full_is_none_when_method_unavailable() -> None:
         def cp_mass(self, T: float, Y_full: np.ndarray) -> float:
             return self.cp
 
-    result = recover_state_from_contents_detailed(
-        contents=contents,
-        mesh=mesh,
-        species_maps=species_maps,
-        recovery_cfg=cfg,
-        liquid_thermo=SimpleLiqThermo(cp_l),
-        gas_thermo=gas_thermo,
-        interface_seed=make_interface(species_maps),
-        gas_pressure=101325.0,
-    )
-    assert result.state.Xg_full is None
+    with pytest.raises(StateRecoveryError, match="Xg_full"):
+        recover_state_from_contents_detailed(
+            contents=contents,
+            mesh=mesh,
+            species_maps=species_maps,
+            recovery_cfg=cfg,
+            liquid_thermo=SimpleLiqThermo(cp_l),
+            gas_thermo=NoMWThermo(cp=cp_g),
+            interface_seed=make_interface(species_maps),
+            gas_pressure=101325.0,
+        )
 
 
 # ---------------------------------------------------------------------------

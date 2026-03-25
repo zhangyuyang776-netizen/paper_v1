@@ -387,7 +387,7 @@ def _invert_temperature_safeguarded_newton(
     max_iter: int,
     pressure: float | None = None,
     T_hint: float | None = None,
-) -> tuple[float, str]:
+) -> tuple[float, str, int]:
     if not np.isfinite(target_h):
         raise StateRecoveryError("target_h must be finite")
     left, right = _validate_effective_temperature_bracket(T_low, T_high, label="safeguarded inversion")
@@ -408,15 +408,16 @@ def _invert_temperature_safeguarded_newton(
     used_newton = False
     used_bisection = False
 
-    for _ in range(max_iter):
+    for iter_num in range(max_iter):
         h_curr = _call_thermo_enthalpy(thermo, T=T_curr, y_full=y_full, pressure=pressure)
         residual = h_curr - target_h
         if abs(residual) <= tol:
+            niter = iter_num + 1
             if used_newton and used_bisection:
-                return T_curr, "newton+bisection"
+                return T_curr, "newton+bisection", niter
             if used_newton:
-                return T_curr, "newton"
-            return T_curr, "bisection"
+                return T_curr, "newton", niter
+            return T_curr, "bisection", niter
 
         if residual < 0.0:
             left = T_curr
@@ -448,9 +449,9 @@ def _invert_liquid_h_to_T_safeguarded(
     recovery_cfg: RecoveryConfig,
     liquid_thermo: LiquidThermoProtocol,
     T_hint: float | None = None,
-) -> tuple[float, str, tuple[float, float], float]:
+) -> tuple[float, str, tuple[float, float], float, int]:
     bounds = _get_effective_liquid_temperature_bounds(recovery_cfg, liquid_thermo, y_full)
-    T, mode = _invert_temperature_safeguarded_newton(
+    T, mode, niter = _invert_temperature_safeguarded_newton(
         target_h=target_h,
         y_full=y_full,
         thermo=liquid_thermo,
@@ -468,7 +469,7 @@ def _invert_liquid_h_to_T_safeguarded(
             f"liquid forward enthalpy check failed: |h_fwd - h_target| = {h_fwd_err:.3e} "
             f"> h_check_tol = {float(recovery_cfg.h_check_tol):.3e}"
         )
-    return T, mode, bounds, h_fwd_err
+    return T, mode, bounds, h_fwd_err, niter
 
 
 def _invert_liquid_h_to_T(
@@ -503,7 +504,7 @@ def _invert_gas_h_to_T_hpy_first(
     gas_thermo: GasThermoProtocol,
     pressure: float | None,
     T_hint: float | None = None,
-) -> tuple[float, str, tuple[float, float], str | None, float]:
+) -> tuple[float, str, tuple[float, float], str | None, float, int]:
     bounds = _get_effective_gas_temperature_bounds(recovery_cfg, gas_thermo, y_full)
     skipped_reason: str | None = None
 
@@ -520,7 +521,7 @@ def _invert_gas_h_to_T_hpy_first(
                 h_fwd = _call_thermo_enthalpy(gas_thermo, T=T_hpy, y_full=y_full, pressure=pressure)
                 h_fwd_err_hpy = abs(h_fwd - target_h)
                 if h_fwd_err_hpy <= float(recovery_cfg.h_check_tol):
-                    return float(T_hpy), "hpy", bounds, None, h_fwd_err_hpy
+                    return float(T_hpy), "hpy", bounds, None, h_fwd_err_hpy, 0
                 else:
                     skipped_reason = "hpy_check_failed"
         except Exception:
@@ -529,7 +530,7 @@ def _invert_gas_h_to_T_hpy_first(
         skipped_reason = "missing_reference_pressure"
 
     # Newton fallback path.
-    T, _mode = _invert_temperature_safeguarded_newton(
+    T, _mode, niter = _invert_temperature_safeguarded_newton(
         target_h=target_h,
         y_full=y_full,
         thermo=gas_thermo,
@@ -548,7 +549,7 @@ def _invert_gas_h_to_T_hpy_first(
             f"gas forward enthalpy check failed: |h_fwd - h_target| = {h_fwd_err:.3e} "
             f"> h_check_tol = {float(recovery_cfg.h_check_tol):.3e}"
         )
-    return T, "fallback_scalar", bounds, skipped_reason, h_fwd_err
+    return T, "fallback_scalar", bounds, skipped_reason, h_fwd_err, niter
 
 
 def _invert_gas_h_to_T(
@@ -604,6 +605,7 @@ def _recover_liquid_phase_state_with_diagnostics(
     inversion_modes: list[str] = []
     bounds_list: list[tuple[float, float]] = []
     h_fwd_errs: list[float] = []
+    niters: list[int] = []
     # S-2: T_hint three-level priority chain (seed > cp_min estimate > rolling).
     seed_T_l = temperature_seeds.T_l if temperature_seeds is not None else None
     T_hint_rolling: float | None = None
@@ -619,7 +621,7 @@ def _recover_liquid_phase_state_with_diagnostics(
             seed=seed_i,
             rolling_hint=T_hint_rolling,
         )
-        T_i, mode_i, bounds_i, h_fwd_err_i = _invert_liquid_h_to_T_safeguarded(
+        T_i, mode_i, bounds_i, h_fwd_err_i, niter_i = _invert_liquid_h_to_T_safeguarded(
             target_h=float(h_i),
             y_full=Yl_full[i, :],
             recovery_cfg=recovery_cfg,
@@ -631,6 +633,7 @@ def _recover_liquid_phase_state_with_diagnostics(
         inversion_modes.append(mode_i)
         bounds_list.append(bounds_i)
         h_fwd_errs.append(h_fwd_err_i)
+        niters.append(niter_i)
     diag: dict[str, object] = {
         "liq_recovery_success": True,
         "liq_T_bounds_effective": bounds_list,
@@ -639,6 +642,8 @@ def _recover_liquid_phase_state_with_diagnostics(
         "min_Tl": float(np.min(Tl)) if Tl.size else float("nan"),
         "max_Tl": float(np.max(Tl)) if Tl.size else float("nan"),
         "liq_h_fwd_check_max_err": float(max(h_fwd_errs)) if h_fwd_errs else float("nan"),
+        "liq_h_inv_max_niter": int(max(niters)) if niters else 0,
+        "liq_h_inv_total_niter": int(sum(niters)),
         "liq_Y_num_minor_fixes": int(Y_diag["num_minor_fixes"]),
         "liq_Y_max_sum_err": float(Y_diag["max_Y_sum_err"]),
         "liq_Y_max_negative_species_mass": float(Y_diag["max_negative_species_mass"]),
@@ -689,11 +694,30 @@ def _recover_gas_phase_state_with_diagnostics(
     # S-5: best-effort Xg_full recovery with two-tier fallback.
     Xg_full, xg_status = _recover_xg_full_best_effort(Yg_full, gas_thermo)
 
+    # X-Y consistency: when Xg_full is available, verify it is consistent with
+    # Yg_full via the MW transformation X_i = (Y_i/MW_i) / sum(Y_j/MW_j).
+    # Requires molecular_weights on gas_thermo; NaN if unavailable.
+    gas_XY_consistency_err = float("nan")
+    if Xg_full is not None:
+        mw_attr = getattr(gas_thermo, "molecular_weights", None)
+        if mw_attr is not None:
+            try:
+                MW = np.asarray(mw_attr() if callable(mw_attr) else mw_attr, dtype=np.float64)
+                if MW.ndim == 1 and MW.shape[0] == Yg_full.shape[1] and np.all(MW > 0.0):
+                    X_from_Y = Yg_full / MW[None, :]
+                    X_sum = np.sum(X_from_Y, axis=1, keepdims=True)
+                    X_sum = np.where(X_sum <= 0.0, 1.0, X_sum)
+                    X_from_Y = X_from_Y / X_sum
+                    gas_XY_consistency_err = float(np.max(np.abs(Xg_full - X_from_Y)))
+            except Exception:
+                pass
+
     Tg = np.zeros_like(hg)
     inversion_modes: list[str] = []
     bounds_list: list[tuple[float, float]] = []
     skipped_reasons: list[str | None] = []
     h_fwd_errs: list[float] = []
+    niters: list[int] = []
     # S-1: use explicit gas_pressure; fall back to inference for legacy callers.
     if gas_pressure is not None and np.isfinite(gas_pressure) and gas_pressure > 0.0:
         pressure: float | None = gas_pressure
@@ -716,7 +740,7 @@ def _recover_gas_phase_state_with_diagnostics(
             seed=seed_i,
             rolling_hint=T_hint_rolling,
         )
-        T_i, mode_i, bounds_i, skipped_reason_i, h_fwd_err_i = _invert_gas_h_to_T_hpy_first(
+        T_i, mode_i, bounds_i, skipped_reason_i, h_fwd_err_i, niter_i = _invert_gas_h_to_T_hpy_first(
             target_h=float(h_i),
             y_full=Yg_full[i, :],
             recovery_cfg=recovery_cfg,
@@ -730,6 +754,7 @@ def _recover_gas_phase_state_with_diagnostics(
         bounds_list.append(bounds_i)
         skipped_reasons.append(skipped_reason_i)
         h_fwd_errs.append(h_fwd_err_i)
+        niters.append(niter_i)
 
     non_none_skips = [r for r in skipped_reasons if r is not None]
     diag: dict[str, object] = {
@@ -740,6 +765,8 @@ def _recover_gas_phase_state_with_diagnostics(
         "min_Tg": float(np.min(Tg)) if Tg.size else float("nan"),
         "max_Tg": float(np.max(Tg)) if Tg.size else float("nan"),
         "gas_h_fwd_check_max_err": float(max(h_fwd_errs)) if h_fwd_errs else float("nan"),
+        "gas_h_inv_max_niter": int(max(niters)) if niters else 0,
+        "gas_h_inv_total_niter": int(sum(niters)),
         "gas_Y_num_minor_fixes": int(Y_diag["num_minor_fixes"]),
         "gas_Y_max_sum_err": float(Y_diag["max_Y_sum_err"]),
         "gas_Y_max_negative_species_mass": float(Y_diag["max_negative_species_mass"]),
@@ -747,6 +774,7 @@ def _recover_gas_phase_state_with_diagnostics(
         "gas_recovery_used_fallback": any(m != "hpy" for m in inversion_modes),
         "gas_pressure_source": gas_pressure_source,
         "Xg_full_recovery_status": xg_status,
+        "gas_XY_consistency_err": gas_XY_consistency_err,
         "Xg_full": Xg_full,
         "gas_hpy_skipped_reason": (
             non_none_skips[0] if len(set(non_none_skips)) == 1 else (non_none_skips if non_none_skips else None)
@@ -860,6 +888,23 @@ def validate_recovered_state_postchecks(
                 f"recovered Xg_full row sums deviate from 1 by {gas_X_max_sum_err:.3e}"
             )
 
+    # X-Y consistency check: Xg_full must agree with Yg_full via MW transformation.
+    postcheck_gas_XY_consistency_err = float("nan")
+    if diagnostics is not None:
+        xy_err_raw = diagnostics.get("gas_XY_consistency_err")
+        if xy_err_raw is not None:
+            try:
+                xy_val = float(xy_err_raw)
+                if not np.isnan(xy_val):
+                    postcheck_gas_XY_consistency_err = xy_val
+                    if xy_val > Y_sum_tol:
+                        raise StateRecoveryError(
+                            f"Xg_full / Yg_full X-Y consistency error {xy_val:.3e} "
+                            f"exceeds Y_sum_tol {Y_sum_tol:.3e}"
+                        )
+            except (TypeError, ValueError):
+                pass
+
     return {
         "postchecks_passed": True,
         "min_rho_l": min_rho_l,
@@ -867,6 +912,7 @@ def validate_recovered_state_postchecks(
         "liq_Y_max_sum_err": liq_Y_max_sum_err,
         "gas_Y_max_sum_err": gas_Y_max_sum_err,
         "gas_X_max_sum_err": gas_X_max_sum_err,
+        "postcheck_gas_XY_consistency_err": postcheck_gas_XY_consistency_err,
     }
 
 
@@ -1005,6 +1051,12 @@ def recover_state_from_contents_detailed(
         time=time,
         state_id=state_id,
     )
+    # S-5: Xg_full must be recoverable; silent failure is not allowed here.
+    if state.Xg_full is None:
+        raise StateRecoveryError(
+            "Xg_full could not be recovered from gas_thermo; "
+            "gas_thermo must provide mole_fractions_from_mass or molecular_weights"
+        )
     return StateRecoveryResult(state=state, diagnostics=diagnostics)
 
 
@@ -1054,6 +1106,13 @@ def summarize_recovery_diagnostics(
         # Pressure and mole-fraction recovery.
         "gas_pressure_source",
         "Xg_full_recovery_status",
+        # Enthalpy inversion iteration counts.
+        "liq_h_inv_max_niter",
+        "liq_h_inv_total_niter",
+        "gas_h_inv_max_niter",
+        "gas_h_inv_total_niter",
+        # X-Y consistency error.
+        "gas_XY_consistency_err",
         # Post-check results.
         "postchecks_passed",
         # Cell counts.
