@@ -159,11 +159,10 @@ def test_new_recovery_schema_passes() -> None:
 )
 def test_legacy_recovery_keys_rejected(legacy_key: str) -> None:
     cfg = make_minimal_valid_raw_config()
-    # Remove one of the new required fields to make room, then inject legacy key.
-    # The schema uses allow_unknown_keys=False so any unexpected key is rejected.
-    del cfg["recovery"]["h_abs_tol"]
+    # Add legacy key on top of an otherwise complete valid recovery block.
+    # allow_unknown_keys=False means any unexpected key must be rejected directly.
     cfg["recovery"][legacy_key] = 1.0e-10
-    with pytest.raises(ConfigValidationError):
+    with pytest.raises(ConfigValidationError, match="Unknown field"):
         validate_config_schema(cfg)
 
 

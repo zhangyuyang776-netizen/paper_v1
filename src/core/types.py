@@ -429,11 +429,11 @@ class RecoveryConfig:
         _check_positive("T_step_tol", self.T_step_tol)
         _check_positive("cp_min", self.cp_min)
         _check_positive("T_min_l", self.T_min_l)
-        if self.T_max_l <= self.T_min_l:
-            raise ValueError("Require T_max_l > T_min_l")
+        if not np.isfinite(self.T_max_l) or self.T_max_l <= self.T_min_l:
+            raise ValueError("Require finite T_max_l > T_min_l")
         _check_positive("T_min_g", self.T_min_g)
-        if self.T_max_g <= self.T_min_g:
-            raise ValueError("Require T_max_g > T_min_g")
+        if not np.isfinite(self.T_max_g) or self.T_max_g <= self.T_min_g:
+            raise ValueError("Require finite T_max_g > T_min_g")
         if self.liquid_h_inv_max_iter < 1:
             raise ValueError("liquid_h_inv_max_iter must be >= 1")
         if self.gas_h_inv_max_iter < 1:
