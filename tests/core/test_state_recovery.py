@@ -56,13 +56,21 @@ def make_dummy_mesh(n_liq: int, n_gas: int) -> Mesh1D:
 
 def make_recovery_config() -> RecoveryConfig:
     return RecoveryConfig(
+        rho_min=1.0e-12,
+        m_min=1.0e-20,
+        species_recovery_eps_abs=1.0e-14,
+        Y_sum_tol=1.0e-10,
+        Y_hard_tol=1.0e-6,
+        h_abs_tol=1.0e-12,
+        h_rel_tol=1.0e-12,
+        h_check_tol=1.0e-8,
+        T_step_tol=1.0e-8,
         T_min_l=200.0,
         T_max_l=800.0,
         T_min_g=200.0,
         T_max_g=4000.0,
-        liq_h_inv_tol=1.0e-12,
-        liq_h_inv_max_iter=100,
-        gas_h_inv_tol=1.0e-12,
+        liquid_h_inv_max_iter=100,
+        cp_min=1.0,
         gas_h_inv_max_iter=100,
         use_cantera_hpy_first=True,
     )
@@ -191,14 +199,21 @@ def test_recover_specific_enthalpy() -> None:
 def test_recover_full_mass_fractions_multicomponent() -> None:
     mass = np.array([2.0, 4.0], dtype=np.float64)
     species_mass = np.array([[0.5, 1.5], [1.0, 3.0]], dtype=np.float64)
-    Y = _recover_full_mass_fractions(species_mass, mass, n_full=2)
+    Y, _ = _recover_full_mass_fractions(
+        species_mass, mass, n_full=2, species_recovery_eps_abs=1.0e-14,
+        m_min=1.0e-20, Y_sum_tol=1.0e-10, Y_hard_tol=1.0e-6,
+    )
     assert np.allclose(Y, np.array([[0.25, 0.75], [0.25, 0.75]]))
 
 
 def test_recover_full_mass_fractions_single_component_liquid() -> None:
     mass = np.array([2.0, 4.0], dtype=np.float64)
     species_mass = np.array([[2.0], [4.0]], dtype=np.float64)
-    Y = _recover_full_mass_fractions(species_mass, mass, n_full=1, single_component_name="ethanol")
+    Y, _ = _recover_full_mass_fractions(
+        species_mass, mass, n_full=1, single_component_name="ethanol",
+        species_recovery_eps_abs=1.0e-14,
+        m_min=1.0e-20, Y_sum_tol=1.0e-10, Y_hard_tol=1.0e-6,
+    )
     assert np.allclose(Y, np.ones((2, 1)))
 
 
@@ -341,6 +356,8 @@ def test_recover_mass_fractions_rejects_species_mass_sum_mismatch() -> None:
             np.array([[0.2, 0.2]], dtype=np.float64),
             np.array([1.0], dtype=np.float64),
             n_full=2,
+            species_recovery_eps_abs=1.0e-14,
+            m_min=1.0e-20, Y_sum_tol=1.0e-10, Y_hard_tol=1.0e-6,
         )
 
 
@@ -374,6 +391,8 @@ def test_recovery_does_not_renormalize_species_mass() -> None:
             np.array([[0.8, 0.8]], dtype=np.float64),
             np.array([1.0], dtype=np.float64),
             n_full=2,
+            species_recovery_eps_abs=1.0e-14,
+            m_min=1.0e-20, Y_sum_tol=1.0e-10, Y_hard_tol=1.0e-6,
         )
 
 

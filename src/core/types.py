@@ -383,30 +383,66 @@ class InnerSolverConfig:
 
 @dataclass(slots=True, kw_only=True, frozen=True)
 class RecoveryConfig:
-    """Bounds and tolerances for state recovery / enthalpy inversion."""
+    """Bounds and tolerances for state recovery / enthalpy inversion.
 
+    Field set matches the guideline's formal recovery contract.
+    """
+
+    # --- density / mass floor ---
+    rho_min: float
+    m_min: float
+
+    # --- species tolerances ---
+    species_recovery_eps_abs: float
+    Y_sum_tol: float
+    Y_hard_tol: float
+
+    # --- enthalpy inversion tolerances ---
+    h_abs_tol: float
+    h_rel_tol: float
+    h_check_tol: float
+    T_step_tol: float
+
+    # --- temperature bounds ---
     T_min_l: float
     T_max_l: float
     T_min_g: float
     T_max_g: float
-    liq_h_inv_tol: float
-    liq_h_inv_max_iter: int
-    gas_h_inv_tol: float
+
+    # --- iteration limits and thermo floor ---
+    liquid_h_inv_max_iter: int
+    cp_min: float
     gas_h_inv_max_iter: int
+
+    # --- algorithm switch ---
     use_cantera_hpy_first: bool
 
     def __post_init__(self) -> None:
-        if self.T_max_l <= self.T_min_l:
-            raise ValueError("Require T_max_l > T_min_l")
-        if self.T_max_g <= self.T_min_g:
-            raise ValueError("Require T_max_g > T_min_g")
-        _check_positive("liq_h_inv_tol", self.liq_h_inv_tol)
-        _check_positive("gas_h_inv_tol", self.gas_h_inv_tol)
-        if self.liq_h_inv_max_iter < 1:
-            raise ValueError("liq_h_inv_max_iter must be >= 1")
+        _check_positive("rho_min", self.rho_min)
+        _check_positive("m_min", self.m_min)
+        _check_positive("species_recovery_eps_abs", self.species_recovery_eps_abs)
+        _check_positive("Y_sum_tol", self.Y_sum_tol)
+        _check_positive("Y_hard_tol", self.Y_hard_tol)
+        _check_positive("h_abs_tol", self.h_abs_tol)
+        _check_positive("h_rel_tol", self.h_rel_tol)
+        _check_positive("h_check_tol", self.h_check_tol)
+        _check_positive("T_step_tol", self.T_step_tol)
+        _check_positive("cp_min", self.cp_min)
+        _check_positive("T_min_l", self.T_min_l)
+        if not np.isfinite(self.T_max_l) or self.T_max_l <= self.T_min_l:
+            raise ValueError("Require finite T_max_l > T_min_l")
+        _check_positive("T_min_g", self.T_min_g)
+        if not np.isfinite(self.T_max_g) or self.T_max_g <= self.T_min_g:
+            raise ValueError("Require finite T_max_g > T_min_g")
+        if self.liquid_h_inv_max_iter < 1:
+            raise ValueError("liquid_h_inv_max_iter must be >= 1")
         if self.gas_h_inv_max_iter < 1:
             raise ValueError("gas_h_inv_max_iter must be >= 1")
-
+        if not self.use_cantera_hpy_first:
+            raise ValueError(
+                "use_cantera_hpy_first must be True per recovery contract; "
+                "the gas-phase HPY-first path is mandatory"
+            )
 
 @dataclass(slots=True, kw_only=True, frozen=True)
 class DiagnosticsConfig:
@@ -1280,6 +1316,45 @@ class StepContext:
         return self.accepted_mesh
 
 
+@dataclass(slots=True, kw_only=True, frozen=True)
+class RecoveryTemperatureSeeds:
+    """Optional per-cell temperature hints to seed enthalpy inversion.
+
+    Typically populated from the recovered temperatures of the previous timestep.
+    Either field may be None when seeds are unavailable for that phase.
+    """
+
+    T_l: FloatArray | None = None
+    T_g: FloatArray | None = None
+
+    def __post_init__(self) -> None:
+        for name, arr in (("T_l", self.T_l), ("T_g", self.T_g)):
+            if arr is not None:
+                a = np.asarray(arr, dtype=np.float64)
+                if a.ndim != 1:
+                    raise ValueError(f"RecoveryTemperatureSeeds.{name} must be 1-D, got ndim={a.ndim}")
+                if np.any(np.isinf(a)):
+                    raise ValueError(
+                        f"RecoveryTemperatureSeeds.{name} must not contain ±inf; "
+                        f"use NaN to mark absent seeds"
+                    )
+                a.setflags(write=False)
+                object.__setattr__(self, name, a)
+
+
+@dataclass(slots=True, kw_only=True, frozen=True)
+class StateRecoveryResult:
+    """Result of a detailed state recovery call.
+
+    Pairs the recovered :class:`State` with the per-phase diagnostics dict
+    produced by the inversion loop (inversion modes, effective temperature
+    bounds, HPY skip reasons, etc.).
+    """
+
+    state: State
+    diagnostics: dict  # dict[str, object]
+
+
 __all__ = [
     "CasePaths",
     "ConservativeContents",
@@ -1303,8 +1378,10 @@ __all__ = [
     "PathLike",
     "Props",
     "RecoveryConfig",
+    "RecoveryTemperatureSeeds",
     "RegionSlices",
     "RunConfig",
+    "StateRecoveryResult",
     "SpeciesControlConfig",
     "SpeciesMaps",
     "StateTransferRecord",

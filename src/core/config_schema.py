@@ -266,17 +266,63 @@ def _build_recovery_schema() -> SchemaSection:
         name="recovery",
         required=True,
         fields=(
-            SchemaField("T_min_l", float, required=True),
-            SchemaField("T_max_l", float, required=True),
-            SchemaField("T_min_g", float, required=True),
-            SchemaField("T_max_g", float, required=True),
-            SchemaField("liq_h_inv_tol", float, required=True, min_value=0.0),
-            SchemaField("liq_h_inv_max_iter", int, required=True, min_value=1),
-            SchemaField("gas_h_inv_tol", float, required=True, min_value=0.0),
+            SchemaField("rho_min", float, required=True, min_value=0.0),
+            SchemaField("m_min", float, required=True, min_value=0.0),
+            SchemaField("species_recovery_eps_abs", float, required=True, min_value=0.0),
+            SchemaField("Y_sum_tol", float, required=True, min_value=0.0),
+            SchemaField("Y_hard_tol", float, required=True, min_value=0.0),
+            SchemaField("h_abs_tol", float, required=True, min_value=0.0),
+            SchemaField("h_rel_tol", float, required=True, min_value=0.0),
+            SchemaField("h_check_tol", float, required=True, min_value=0.0),
+            SchemaField("T_step_tol", float, required=True, min_value=0.0),
+            SchemaField("T_min_l", float, required=True, min_value=0.0),
+            SchemaField("T_max_l", float, required=True, min_value=0.0),
+            SchemaField("T_min_g", float, required=True, min_value=0.0),
+            SchemaField("T_max_g", float, required=True, min_value=0.0),
+            SchemaField("liquid_h_inv_max_iter", int, required=True, min_value=1),
+            SchemaField("cp_min", float, required=True, min_value=0.0),
             SchemaField("gas_h_inv_max_iter", int, required=True, min_value=1),
             SchemaField("use_cantera_hpy_first", bool, required=True),
         ),
     )
+
+
+def _validate_recovery_section(raw_cfg: Mapping[str, Any]) -> None:
+    """Strict cross-field validation for the recovery section."""
+    recovery = _expect_mapping("recovery", raw_cfg["recovery"])
+    _strict_positive_fields = (
+        "rho_min",
+        "m_min",
+        "species_recovery_eps_abs",
+        "Y_sum_tol",
+        "Y_hard_tol",
+        "h_abs_tol",
+        "h_rel_tol",
+        "h_check_tol",
+        "T_step_tol",
+        "cp_min",
+    )
+    for field_name in _strict_positive_fields:
+        if float(recovery[field_name]) <= 0.0:
+            raise ConfigValidationError(
+                f"recovery.{field_name} must be strictly greater than 0"
+            )
+    if float(recovery["T_min_l"]) <= 0.0:
+        raise ConfigValidationError("recovery.T_min_l must be greater than 0")
+    if float(recovery["T_min_g"]) <= 0.0:
+        raise ConfigValidationError("recovery.T_min_g must be greater than 0")
+    if float(recovery["T_max_l"]) <= float(recovery["T_min_l"]):
+        raise ConfigValidationError("T_max_l must be greater than T_min_l")
+    if float(recovery["T_max_g"]) <= float(recovery["T_min_g"]):
+        raise ConfigValidationError("T_max_g must be greater than T_min_g")
+    if int(recovery["liquid_h_inv_max_iter"]) < 1:
+        raise ConfigValidationError("recovery.liquid_h_inv_max_iter must be >= 1")
+    if int(recovery["gas_h_inv_max_iter"]) < 1:
+        raise ConfigValidationError("recovery.gas_h_inv_max_iter must be >= 1")
+    if recovery["use_cantera_hpy_first"] is not True:
+        raise ConfigValidationError(
+            "recovery.use_cantera_hpy_first must be true per recovery contract"
+        )
 
 
 def _build_diagnostics_schema() -> SchemaSection:
@@ -562,12 +608,7 @@ def validate_cross_field_rules(raw_cfg: Mapping[str, Any]) -> None:
     _validate_time_stepper_section(raw_cfg)
     _validate_outer_stepper_section(raw_cfg)
     _validate_solver_inner_petsc_section(raw_cfg)
-
-    recovery = _expect_mapping("recovery", raw_cfg["recovery"])
-    if float(recovery["T_max_l"]) <= float(recovery["T_min_l"]):
-        raise ConfigValidationError("T_max_l must be greater than T_min_l")
-    if float(recovery["T_max_g"]) <= float(recovery["T_min_g"]):
-        raise ConfigValidationError("T_max_g must be greater than T_min_g")
+    _validate_recovery_section(raw_cfg)
 
     species = _expect_mapping("species", raw_cfg["species"])
     if not isinstance(species["gas_closure_species"], str) or species["gas_closure_species"].strip() == "":

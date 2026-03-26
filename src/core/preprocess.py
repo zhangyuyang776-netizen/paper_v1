@@ -262,6 +262,80 @@ def _build_species_maps(
     )
 
 
+def _build_recovery_config(raw_recovery: Mapping[str, Any]) -> RecoveryConfig:
+    """Build RecoveryConfig from a schema-validated raw recovery dict."""
+    return RecoveryConfig(
+        rho_min=float(raw_recovery["rho_min"]),
+        m_min=float(raw_recovery["m_min"]),
+        species_recovery_eps_abs=float(raw_recovery["species_recovery_eps_abs"]),
+        Y_sum_tol=float(raw_recovery["Y_sum_tol"]),
+        Y_hard_tol=float(raw_recovery["Y_hard_tol"]),
+        h_abs_tol=float(raw_recovery["h_abs_tol"]),
+        h_rel_tol=float(raw_recovery["h_rel_tol"]),
+        h_check_tol=float(raw_recovery["h_check_tol"]),
+        T_step_tol=float(raw_recovery["T_step_tol"]),
+        T_min_l=float(raw_recovery["T_min_l"]),
+        T_max_l=float(raw_recovery["T_max_l"]),
+        T_min_g=float(raw_recovery["T_min_g"]),
+        T_max_g=float(raw_recovery["T_max_g"]),
+        liquid_h_inv_max_iter=int(raw_recovery["liquid_h_inv_max_iter"]),
+        cp_min=float(raw_recovery["cp_min"]),
+        gas_h_inv_max_iter=int(raw_recovery["gas_h_inv_max_iter"]),
+        use_cantera_hpy_first=bool(raw_recovery["use_cantera_hpy_first"]),
+    )
+
+
+def _validate_mass_fraction_vector(
+    *,
+    name: str,
+    vec: np.ndarray,
+    sum_mode: str,
+    sum_tol: float,
+    neg_tol: float,
+) -> None:
+    """Validate a full-order mass fraction vector.
+
+    Parameters
+    ----------
+    name:
+        Human-readable label used in error messages.
+    vec:
+        Full-order mass fraction array.
+    sum_mode:
+        ``"eq_one"`` requires ``|sum(vec) - 1| <= sum_tol``.
+        ``"leq_one"`` requires ``0 <= sum(vec) <= 1 + sum_tol``.
+    sum_tol:
+        Absolute tolerance on the sum check.
+    neg_tol:
+        Absolute tolerance below which negative values are rejected
+        (i.e. values < -neg_tol are an error).
+    """
+    if not np.all(np.isfinite(vec)):
+        raise PreprocessError(
+            f"Mass fraction vector '{name}' contains non-finite values"
+        )
+    if np.any(vec < -neg_tol):
+        raise PreprocessError(
+            f"Mass fraction vector '{name}' contains values below -{neg_tol:.3e}: "
+            f"min={float(np.min(vec)):.3e}"
+        )
+    total = float(np.sum(vec))
+    if sum_mode == "eq_one":
+        if abs(total - 1.0) > sum_tol:
+            raise PreprocessError(
+                f"Mass fraction vector '{name}' must sum to 1.0 within tolerance "
+                f"{sum_tol:.3e}: sum={total:.10f}"
+            )
+    elif sum_mode == "leq_one":
+        if total < -sum_tol or total > 1.0 + sum_tol:
+            raise PreprocessError(
+                f"Mass fraction vector '{name}' must satisfy 0 <= sum <= 1 within "
+                f"tolerance {sum_tol:.3e}: sum={total:.10f}"
+            )
+    else:
+        raise ValueError(f"Unknown sum_mode: {sum_mode!r}")
+
+
 def _build_full_mass_fraction_vector(
     *,
     full_names: tuple[str, ...],
@@ -284,27 +358,55 @@ def _build_initialization_config(
     gas_full_names: tuple[str, ...],
     liquid_full_names: tuple[str, ...],
     mapped_vapor_gas_names: tuple[str, ...],
+    y_sum_tol: float,
+    species_neg_tol: float,
 ) -> InitializationConfig:
     y_vap_if0_keys = set(raw_init["Y_vap_if0"].keys())
     if not y_vap_if0_keys.issubset(set(mapped_vapor_gas_names)):
         raise PreprocessError("initialization.Y_vap_if0 must be a subset of mapped vapor gas species")
 
+    gas_y_full_0 = _build_full_mass_fraction_vector(
+        full_names=gas_full_names,
+        provided_mass_fractions=raw_init["gas_composition"],
+    )
+    liquid_y_full_0 = _build_full_mass_fraction_vector(
+        full_names=liquid_full_names,
+        provided_mass_fractions=raw_init["liquid_composition"],
+    )
+    y_vap_if0_gas_full = _build_full_mass_fraction_vector(
+        full_names=gas_full_names,
+        provided_mass_fractions=raw_init["Y_vap_if0"],
+    )
+
+    _validate_mass_fraction_vector(
+        name="gas_y_full_0",
+        vec=gas_y_full_0,
+        sum_mode="eq_one",
+        sum_tol=y_sum_tol,
+        neg_tol=species_neg_tol,
+    )
+    _validate_mass_fraction_vector(
+        name="liquid_y_full_0",
+        vec=liquid_y_full_0,
+        sum_mode="eq_one",
+        sum_tol=y_sum_tol,
+        neg_tol=species_neg_tol,
+    )
+    _validate_mass_fraction_vector(
+        name="y_vap_if0_gas_full",
+        vec=y_vap_if0_gas_full,
+        sum_mode="leq_one",
+        sum_tol=y_sum_tol,
+        neg_tol=species_neg_tol,
+    )
+
     return InitializationConfig(
         gas_temperature=float(raw_init["gas_temperature"]),
         gas_pressure=float(raw_init["gas_pressure"]),
         liquid_temperature=float(raw_init["liquid_temperature"]),
-        gas_y_full_0=_build_full_mass_fraction_vector(
-            full_names=gas_full_names,
-            provided_mass_fractions=raw_init["gas_composition"],
-        ),
-        liquid_y_full_0=_build_full_mass_fraction_vector(
-            full_names=liquid_full_names,
-            provided_mass_fractions=raw_init["liquid_composition"],
-        ),
-        y_vap_if0_gas_full=_build_full_mass_fraction_vector(
-            full_names=gas_full_names,
-            provided_mass_fractions=raw_init["Y_vap_if0"],
-        ),
+        gas_y_full_0=gas_y_full_0,
+        liquid_y_full_0=liquid_y_full_0,
+        y_vap_if0_gas_full=y_vap_if0_gas_full,
         t_init_T=float(raw_init["t_init_T"]),
     )
 
@@ -399,6 +501,7 @@ def _build_run_config(
     species_maps: SpeciesMaps,
     initialization: InitializationConfig,
     unknowns_profile: str,
+    recovery_cfg: RecoveryConfig,
 ) -> RunConfig:
     mesh_cfg = raw_cfg["mesh"]
     species_cfg = raw_cfg["species"]
@@ -435,7 +538,7 @@ def _build_run_config(
         time_stepper=TimeStepperConfig(**time_stepper_cfg),
         outer_stepper=OuterStepperConfig(**outer_stepper_cfg),
         inner_solver=InnerSolverConfig(**inner_solver_cfg),
-        recovery=RecoveryConfig(**raw_cfg["recovery"]),
+        recovery=recovery_cfg,
         diagnostics=DiagnosticsConfig(**raw_cfg["diagnostics"]),
         output=OutputConfig(**raw_cfg["output"]),
         validation=ValidationConfig(**raw_cfg["validation"]),
@@ -451,6 +554,9 @@ def normalize_config(
     *,
     source_path: str | Path,
 ) -> RunConfig:
+    # Build recovery config first: its tolerances are used by _build_initialization_config.
+    recovery_cfg = _build_recovery_config(raw_cfg["recovery"])
+
     case_root = _resolve_case_root(source_path)
     paths = _resolve_external_paths(raw_cfg, case_root=case_root, source_path=source_path)
     gas_full_names = _load_gas_species_names(paths.gas_mechanism_path, phase_name=DEFAULT_GAS_PHASE_NAME)
@@ -478,6 +584,8 @@ def normalize_config(
         gas_full_names=gas_full_names,
         liquid_full_names=liquid_full_names,
         mapped_vapor_gas_names=tuple(raw_cfg["species"]["liquid_to_gas_species_map"].values()),
+        y_sum_tol=recovery_cfg.Y_sum_tol,
+        species_neg_tol=recovery_cfg.species_recovery_eps_abs,
     )
     unknowns_profile = _derive_unknowns_profile(liquid_full_names=liquid_full_names)
     return _build_run_config(
@@ -486,6 +594,7 @@ def normalize_config(
         species_maps=species_maps,
         initialization=initialization,
         unknowns_profile=unknowns_profile,
+        recovery_cfg=recovery_cfg,
     )
 
 
