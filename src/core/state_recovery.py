@@ -102,11 +102,18 @@ def _recover_full_mass_fractions(
             species_mass[i, :] = row * (mass[i] / row_sum)
             num_minor_fixes += 1
 
+    # S-3 fix: strict per-cell relative tolerance.
+    # mass < m_min was already rejected above, so division by mass is safe and
+    # avoids max(|mass|, 1.0) which artificially loosens the check for small cells.
     species_sum = np.sum(species_mass, axis=1)
     diff = np.abs(species_sum - mass)
-    max_Y_sum_err = float(np.max(diff / np.maximum(np.abs(mass), 1.0)))
-    if np.any(diff > Y_sum_tol * np.maximum(np.abs(mass), 1.0)):
-        raise StateRecoveryError("species_mass sums must match mass within tolerance")
+    rel_err = diff / mass
+    max_Y_sum_err = float(np.max(rel_err)) if rel_err.size else float("nan")
+    max_species_mass_abs_closure_err = float(np.max(diff)) if diff.size else float("nan")
+    if np.any(rel_err > Y_sum_tol):
+        raise StateRecoveryError(
+            "species_mass sums must match mass within Y_sum_tol on a per-cell basis"
+        )
 
     if n_full == 1:
         _ = single_component_name
@@ -124,6 +131,7 @@ def _recover_full_mass_fractions(
         "num_minor_fixes": num_minor_fixes,
         "max_Y_sum_err": max_Y_sum_err,
         "max_negative_species_mass": max_negative_species_mass,
+        "max_species_mass_abs_closure_err": max_species_mass_abs_closure_err,
     }
     return Y, diag
 
@@ -320,6 +328,83 @@ def _recover_xg_full_best_effort(
             pass
 
     return None, "failed"
+
+
+def _get_gas_molecular_weights_required(
+    gas_thermo: GasThermoProtocol,
+    expected_size: int,
+) -> tuple[np.ndarray, str]:
+    """Return validated molecular weights (shape, finite, >0) from gas_thermo.
+
+    Tries attribute names in order: molecular_weights, mw, MW,
+    species_molecular_weights.  Raises StateRecoveryError if none satisfy the
+    shape / finiteness / positivity requirements.
+
+    Returns (MW_array, source_attr_name).
+    """
+    _candidates = ("molecular_weights", "mw", "MW", "species_molecular_weights")
+    for attr in _candidates:
+        raw = getattr(gas_thermo, attr, None)
+        if raw is None:
+            continue
+        try:
+            MW = np.asarray(raw() if callable(raw) else raw, dtype=np.float64)
+        except Exception:
+            continue
+        if MW.ndim != 1 or MW.shape[0] != expected_size:
+            continue
+        if not np.all(np.isfinite(MW)) or not np.all(MW > 0.0):
+            continue
+        return MW, attr
+    raise StateRecoveryError(
+        "detailed recovery requires molecular weights for X-Y consistency validation; "
+        "gas_thermo must provide one of: molecular_weights, mw, MW, "
+        f"species_molecular_weights with shape ({expected_size},) "
+        "and all-positive finite values"
+    )
+
+
+def _recover_xg_full_required(
+    Yg_full: np.ndarray,
+    gas_thermo: GasThermoProtocol,
+) -> tuple[np.ndarray, str, np.ndarray, str]:
+    """Recover mole fractions for detailed recovery (mandatory; raises on failure).
+
+    Strategy:
+      1. MW is always obtained first via :func:`_get_gas_molecular_weights_required`
+         (raises if unavailable) — X-Y consistency needs it regardless of which
+         Xg recovery path succeeds.
+      2. If gas_thermo provides ``mole_fractions_from_mass``, use it.
+      3. Otherwise compute Xg analytically: X_i = (Y_i/W_i) / Σ(Y_j/W_j).
+
+    Returns:
+        (Xg_full, xg_source, MW, mw_attr_name)
+    """
+    n_species = Yg_full.shape[1]
+    MW, mw_attr = _get_gas_molecular_weights_required(gas_thermo, n_species)
+
+    mole_fractions_fn = getattr(gas_thermo, "mole_fractions_from_mass", None)
+    if callable(mole_fractions_fn):
+        try:
+            Xg = np.asarray(mole_fractions_fn(Yg_full), dtype=np.float64)
+            if Xg.shape == Yg_full.shape and np.all(np.isfinite(Xg)) and np.all(Xg >= 0.0):
+                return Xg, "mole_fractions_from_mass", MW, mw_attr
+        except Exception:
+            pass
+
+    # Analytic MW-based conversion.
+    X_unnorm = Yg_full / MW[None, :]
+    X_sum = np.sum(X_unnorm, axis=1, keepdims=True)
+    if np.any(X_sum <= 0.0):
+        raise StateRecoveryError(
+            "detailed recoverable Xg_full: MW-conversion denominator is non-positive"
+        )
+    Xg = X_unnorm / X_sum
+    if not np.all(np.isfinite(Xg)) or np.any(Xg < 0.0):
+        raise StateRecoveryError(
+            "detailed recoverable Xg_full: MW-conversion produced invalid values"
+        )
+    return Xg, "mw_conversion", MW, mw_attr
 
 
 def _call_temperature_from_hpy(
@@ -677,6 +762,7 @@ def _recover_gas_phase_state_with_diagnostics(
     *,
     gas_pressure: float | None = None,
     temperature_seeds: RecoveryTemperatureSeeds | None = None,
+    _require_xg: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict[str, object]]:
     gas_volumes = mesh.volumes[mesh.region_slices.gas_all]
     rho_g = _recover_density(contents.mass_g, gas_volumes)
@@ -691,26 +777,49 @@ def _recover_gas_phase_state_with_diagnostics(
     )
     hg = _recover_specific_enthalpy(contents.enthalpy_g, contents.mass_g)
 
-    # S-5: best-effort Xg_full recovery with two-tier fallback.
-    Xg_full, xg_status = _recover_xg_full_best_effort(Yg_full, gas_thermo)
-
-    # X-Y consistency: when Xg_full is available, verify it is consistent with
-    # Yg_full via the MW transformation X_i = (Y_i/MW_i) / sum(Y_j/MW_j).
-    # Requires molecular_weights on gas_thermo; NaN if unavailable.
-    gas_XY_consistency_err = float("nan")
-    if Xg_full is not None:
-        mw_attr = getattr(gas_thermo, "molecular_weights", None)
-        if mw_attr is not None:
-            try:
-                MW = np.asarray(mw_attr() if callable(mw_attr) else mw_attr, dtype=np.float64)
-                if MW.ndim == 1 and MW.shape[0] == Yg_full.shape[1] and np.all(MW > 0.0):
-                    X_from_Y = Yg_full / MW[None, :]
-                    X_sum = np.sum(X_from_Y, axis=1, keepdims=True)
-                    X_sum = np.where(X_sum <= 0.0, 1.0, X_sum)
-                    X_from_Y = X_from_Y / X_sum
-                    gas_XY_consistency_err = float(np.max(np.abs(Xg_full - X_from_Y)))
-            except Exception:
-                pass
+    # Xg_full recovery and X-Y consistency.
+    if _require_xg:
+        # Detailed path: MW is mandatory; X-Y consistency is enforced.
+        Xg_full, xg_status, MW, mw_attr = _recover_xg_full_required(Yg_full, gas_thermo)
+        X_from_Y = Yg_full / MW[None, :]
+        X_sum_check = np.sum(X_from_Y, axis=1, keepdims=True)
+        if np.any(X_sum_check <= 0.0):
+            raise StateRecoveryError(
+                "invalid Yg_full -> Xg_full conversion denominator in detailed recovery"
+            )
+        X_from_Y = X_from_Y / X_sum_check
+        gas_XY_consistency_err = float(np.max(np.abs(Xg_full - X_from_Y)))
+        if gas_XY_consistency_err > float(recovery_cfg.Y_sum_tol):
+            raise StateRecoveryError(
+                f"recovered Xg_full is inconsistent with Yg_full: "
+                f"max|X - X(Y)| = {gas_XY_consistency_err:.3e} > "
+                f"Y_sum_tol = {float(recovery_cfg.Y_sum_tol):.3e}"
+            )
+        gas_molecular_weights_source: str = mw_attr
+    else:
+        # Simple/legacy path: best-effort with optional X-Y consistency.
+        Xg_full, xg_status = _recover_xg_full_best_effort(Yg_full, gas_thermo)
+        gas_molecular_weights_source = "N/A"
+        gas_XY_consistency_err = float("nan")
+        if Xg_full is not None:
+            mw_raw = getattr(gas_thermo, "molecular_weights", None)
+            if mw_raw is not None:
+                try:
+                    MW_opt = np.asarray(
+                        mw_raw() if callable(mw_raw) else mw_raw, dtype=np.float64
+                    )
+                    if (
+                        MW_opt.ndim == 1
+                        and MW_opt.shape[0] == Yg_full.shape[1]
+                        and np.all(MW_opt > 0.0)
+                    ):
+                        X_from_Y = Yg_full / MW_opt[None, :]
+                        X_sum = np.sum(X_from_Y, axis=1, keepdims=True)
+                        X_sum = np.where(X_sum <= 0.0, 1.0, X_sum)
+                        X_from_Y = X_from_Y / X_sum
+                        gas_XY_consistency_err = float(np.max(np.abs(Xg_full - X_from_Y)))
+                except Exception:
+                    pass
 
     Tg = np.zeros_like(hg)
     inversion_modes: list[str] = []
@@ -773,7 +882,8 @@ def _recover_gas_phase_state_with_diagnostics(
         "gas_recovery_used_HPY": any(m == "hpy" for m in inversion_modes),
         "gas_recovery_used_fallback": any(m != "hpy" for m in inversion_modes),
         "gas_pressure_source": gas_pressure_source,
-        "Xg_full_recovery_status": xg_status,
+        "gas_Xg_full_source": xg_status,
+        "gas_molecular_weights_source": gas_molecular_weights_source,
         "gas_XY_consistency_err": gas_XY_consistency_err,
         "Xg_full": Xg_full,
         "gas_hpy_skipped_reason": (
@@ -814,8 +924,13 @@ def validate_recovered_state_postchecks(
     recovery_cfg: RecoveryConfig,
     *,
     diagnostics: dict[str, object] | None = None,
+    require_xy_consistency: bool = False,
 ) -> dict[str, object]:
     """Unified post-check: T bounds, rho_min, Y range/sum, Xg validity.
+
+    When ``require_xy_consistency=True`` (detailed recovery), the check also
+    verifies that ``gas_XY_consistency_err`` in *diagnostics* is finite and
+    within ``Y_sum_tol`` — raising StateRecoveryError if either condition fails.
 
     Raises StateRecoveryError on any violation; returns a dict of post-check
     diagnostics that the caller should merge into the main diagnostics dict.
@@ -890,20 +1005,33 @@ def validate_recovered_state_postchecks(
 
     # X-Y consistency check: Xg_full must agree with Yg_full via MW transformation.
     postcheck_gas_XY_consistency_err = float("nan")
+    xy_val = float("nan")
     if diagnostics is not None:
         xy_err_raw = diagnostics.get("gas_XY_consistency_err")
         if xy_err_raw is not None:
             try:
                 xy_val = float(xy_err_raw)
-                if not np.isnan(xy_val):
-                    postcheck_gas_XY_consistency_err = xy_val
-                    if xy_val > Y_sum_tol:
-                        raise StateRecoveryError(
-                            f"Xg_full / Yg_full X-Y consistency error {xy_val:.3e} "
-                            f"exceeds Y_sum_tol {Y_sum_tol:.3e}"
-                        )
             except (TypeError, ValueError):
-                pass
+                xy_val = float("nan")
+
+    if require_xy_consistency:
+        if not np.isfinite(xy_val):
+            raise StateRecoveryError(
+                "gas_XY_consistency_err must be finite in detailed recovery"
+            )
+        if xy_val > Y_sum_tol:
+            raise StateRecoveryError(
+                f"X-Y consistency check failed: gas_XY_consistency_err={xy_val:.3e} "
+                f"> Y_sum_tol={Y_sum_tol:.3e}"
+            )
+        postcheck_gas_XY_consistency_err = xy_val
+    else:
+        if not np.isnan(xy_val) and xy_val > Y_sum_tol:
+            raise StateRecoveryError(
+                f"Xg_full / Yg_full X-Y consistency error {xy_val:.3e} "
+                f"exceeds Y_sum_tol {Y_sum_tol:.3e}"
+            )
+        postcheck_gas_XY_consistency_err = xy_val
 
     return {
         "postchecks_passed": True,
@@ -929,6 +1057,7 @@ def _recover_state_from_contents_internal(
     temperature_seeds: RecoveryTemperatureSeeds | None = None,
     time: float | None = None,
     state_id: str | None = None,
+    _require_xg: bool = False,
 ) -> tuple[State, dict[str, object]]:
     rho_l, Yl_full, hl, Tl, liq_diag = _recover_liquid_phase_state_with_diagnostics(
         contents,
@@ -946,6 +1075,7 @@ def _recover_state_from_contents_internal(
         gas_thermo,
         gas_pressure=gas_pressure,
         temperature_seeds=temperature_seeds,
+        _require_xg=_require_xg,
     )
 
     # Extract Xg_full from gas diagnostics; keep status in diag.
@@ -969,7 +1099,11 @@ def _recover_state_from_contents_internal(
         **liq_diag,
         **gas_diag,
     }
-    post_diag = validate_recovered_state_postchecks(state, recovery_cfg, diagnostics=diagnostics)
+    post_diag = validate_recovered_state_postchecks(
+        state, recovery_cfg,
+        diagnostics=diagnostics,
+        require_xy_consistency=_require_xg,
+    )
     diagnostics.update(post_diag)
     return state, diagnostics
 
@@ -1038,6 +1172,7 @@ def recover_state_from_contents_detailed(
         raise StateRecoveryError(
             f"gas_pressure must be finite and positive, got {gas_pressure!r}"
         )
+    # S-5: detailed recovery requires recoverable Xg_full and enforced X-Y consistency.
     state, diagnostics = _recover_state_from_contents_internal(
         contents=contents,
         mesh=mesh,
@@ -1050,13 +1185,8 @@ def recover_state_from_contents_detailed(
         temperature_seeds=temperature_seeds,
         time=time,
         state_id=state_id,
+        _require_xg=True,
     )
-    # S-5: Xg_full must be recoverable; silent failure is not allowed here.
-    if state.Xg_full is None:
-        raise StateRecoveryError(
-            "Xg_full could not be recovered from gas_thermo; "
-            "gas_thermo must provide mole_fractions_from_mass or molecular_weights"
-        )
     return StateRecoveryResult(state=state, diagnostics=diagnostics)
 
 
@@ -1105,7 +1235,8 @@ def summarize_recovery_diagnostics(
         "gas_hpy_skipped_reason",
         # Pressure and mole-fraction recovery.
         "gas_pressure_source",
-        "Xg_full_recovery_status",
+        "gas_Xg_full_source",
+        "gas_molecular_weights_source",
         # Enthalpy inversion iteration counts.
         "liq_h_inv_max_niter",
         "liq_h_inv_total_niter",

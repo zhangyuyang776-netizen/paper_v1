@@ -57,10 +57,19 @@ class HPYThermo(FakeLinearGasThermo):
 
 
 class MoleFractionThermo(HPYThermo):
-    """Also provides mole_fractions_from_mass (returns a mock mole fraction matrix)."""
+    """Also provides mole_fractions_from_mass.
+
+    Overrides molecular_weights to 1.0 so that X == Y analytically, keeping
+    the X-Y consistency check at zero error.
+    """
+
+    @property
+    def molecular_weights(self) -> np.ndarray:
+        # Equal MW → X = Y, so mole_fractions_from_mass returning Y-as-is is consistent.
+        return np.ones(2, dtype=np.float64)
 
     def mole_fractions_from_mass(self, Y_full: np.ndarray) -> np.ndarray:
-        # Trivial: return Y as-is (valid for equal-MW mixture).
+        # Valid for equal-MW mixture (MW=[1,1] → X=Y).
         return np.asarray(Y_full, dtype=np.float64)
 
 
@@ -370,7 +379,7 @@ def test_xg_full_recovery_failure_raises_in_detailed_api() -> None:
         def cp_mass(self, T: float, Y_full: np.ndarray) -> float:
             return self.cp
 
-    with pytest.raises(StateRecoveryError, match="Xg_full"):
+    with pytest.raises(StateRecoveryError, match="molecular weights"):
         recover_state_from_contents_detailed(
             contents=contents,
             mesh=mesh,
@@ -587,7 +596,7 @@ def test_xg_full_populated_via_mw_conversion() -> None:
     assert result.state.Xg_full.shape == (n_gas, species_maps.n_gas_full)
     # Row sums should be ≈ 1.
     np.testing.assert_allclose(np.sum(result.state.Xg_full, axis=1), np.ones(n_gas), atol=1e-12)
-    assert result.diagnostics["Xg_full_recovery_status"] == "mw_conversion"
+    assert result.diagnostics["gas_Xg_full_source"] == "mw_conversion"
 
 
 # ---------------------------------------------------------------------------
@@ -638,7 +647,7 @@ def test_detailed_result_contains_full_s7_diagnostic_keys() -> None:
         "gas_recovery_used_HPY",
         "gas_recovery_used_fallback",
         "gas_pressure_source",
-        "Xg_full_recovery_status",
+        "gas_Xg_full_source",
         "postchecks_passed",
         "min_rho_l",
         "min_rho_g",
@@ -691,3 +700,64 @@ def test_cp_min_level2_skipped_when_seed_present() -> None:
     )
     # Should use seed=850, not cp_min estimate=900
     assert T_hint == pytest.approx(850.0)
+
+
+# ---------------------------------------------------------------------------
+# Case 12 (T3): X-Y inconsistency triggers StateRecoveryError
+# ---------------------------------------------------------------------------
+
+class InconsistentXgThermo(FakeLinearGasThermo):
+    """Gas thermo whose mole_fractions_from_mass intentionally disagrees with MW."""
+
+    def __init__(self, cp: float, molecular_weights: list[float], delta: float = 0.5) -> None:
+        super().__init__(cp=cp)
+        self._mw = np.array(molecular_weights, dtype=np.float64)
+        self._delta = delta
+
+    @property
+    def molecular_weights(self) -> np.ndarray:
+        return self._mw
+
+    def temperature_from_hpy(self, h: float, Y_full: np.ndarray, pressure: float) -> float:
+        return (float(h) - self.h_ref) / self.cp
+
+    def mole_fractions_from_mass(self, Y_full: np.ndarray) -> np.ndarray:
+        # Deliberately wrong: shifts the first species mole fraction by delta.
+        Y = np.asarray(Y_full, dtype=np.float64)
+        X = Y.copy()
+        X[:, 0] += self._delta
+        X[:, 1] -= self._delta
+        return np.clip(X, 0.0, 1.0)
+
+
+def test_detailed_recovery_raises_on_xy_inconsistency() -> None:
+    """When mole_fractions_from_mass returns X inconsistent with Y via MW, raise."""
+    n_liq, n_gas = 1, 2
+    T_l = np.array([300.0])
+    T_g = np.array([900.0, 920.0])
+    cp_l, cp_g = 2000.0, 1005.0
+    mesh = make_mesh(n_liq, n_gas)
+    species_maps = make_species_maps()
+    contents = make_contents(n_liq, n_gas, cp_l, cp_g, T_l, T_g)
+    cfg = make_recovery_cfg()  # Y_sum_tol = 1e-10
+
+    class SimpleLiqThermo:
+        def __init__(self, cp: float) -> None:
+            self.cp = cp
+        def enthalpy_mass(self, T: float, Y_full: np.ndarray) -> float:
+            return self.cp * float(T)
+        def cp_mass(self, T: float, Y_full: np.ndarray) -> float:
+            return self.cp
+
+    gas_thermo = InconsistentXgThermo(cp=cp_g, molecular_weights=[28.0, 32.0], delta=0.5)
+    with pytest.raises(StateRecoveryError, match="inconsistent"):
+        recover_state_from_contents_detailed(
+            contents=contents,
+            mesh=mesh,
+            species_maps=species_maps,
+            recovery_cfg=cfg,
+            liquid_thermo=SimpleLiqThermo(cp_l),
+            gas_thermo=gas_thermo,
+            interface_seed=make_interface(species_maps),
+            gas_pressure=101325.0,
+        )

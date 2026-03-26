@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from core.state_recovery import StateRecoveryError, _recover_full_mass_fractions
+from core.types import RecoveryTemperatureSeeds
 
 
 # ---------------------------------------------------------------------------
@@ -133,3 +134,80 @@ def test_single_component_returns_ones_with_minor_fix() -> None:
         Y_hard_tol=1.0e-6,
     )
     np.testing.assert_allclose(Y, [[1.0]])
+
+
+# ---------------------------------------------------------------------------
+# Case T4: species sum tolerance scales with cell mass (not max(mass, 1))
+# ---------------------------------------------------------------------------
+
+def _rfmf_with_tol(
+    species_mass: np.ndarray,
+    mass: np.ndarray,
+    Y_sum_tol: float,
+) -> np.ndarray:
+    n_full = species_mass.shape[1]
+    Y, _ = _recover_full_mass_fractions(
+        species_mass,
+        mass,
+        n_full=n_full,
+        species_recovery_eps_abs=1.0e-30,
+        m_min=1.0e-30,
+        Y_sum_tol=Y_sum_tol,
+        Y_hard_tol=1.0e-3,
+    )
+    return Y
+
+
+def test_species_sum_tolerance_scales_with_cell_mass_passes() -> None:
+    """diff/mass < Y_sum_tol should pass even for very small mass cells."""
+    mass = np.array([1.0e-9])
+    tol = 1.0e-8
+    # Use 50 % of tolerance to stay safely below the boundary.
+    # rel_err = 0.5 * tol < tol → should pass.
+    diff = 0.5 * tol * mass[0]  # absolute diff ≈ 5e-18, well within new check
+    species_mass = np.array([[mass[0] * 0.7, mass[0] * 0.3 + diff]])
+    Y = _rfmf_with_tol(species_mass, mass, Y_sum_tol=tol)
+    assert Y is not None
+    assert Y.shape == (1, 2)
+
+
+def test_species_sum_tolerance_scales_with_cell_mass_fails() -> None:
+    """diff/mass > Y_sum_tol raises; old max(mass,1) would have incorrectly allowed it.
+
+    With mass=1e-9 and diff = 2*tol*mass = 2e-17:
+      - Old check: diff <= tol * max(|mass|, 1) = tol * 1 = 1e-8  → 2e-17 << 1e-8 → PASSES (wrong)
+      - New check: rel_err = diff/mass = 2e-8 > tol = 1e-8         → correctly FAILS
+    """
+    mass = np.array([1.0e-9])
+    tol = 1.0e-8
+    diff = 2.0 * tol * mass[0]  # rel_err = 2*tol > tol → new check raises
+    species_mass = np.array([[mass[0] * 0.7, mass[0] * 0.3 + diff]])
+    with pytest.raises(StateRecoveryError, match="per-cell"):
+        _rfmf_with_tol(species_mass, mass, Y_sum_tol=tol)
+
+
+# ---------------------------------------------------------------------------
+# Case T5: RecoveryTemperatureSeeds rejects 2-D arrays and ±inf values
+# ---------------------------------------------------------------------------
+
+def test_recovery_temperature_seeds_rejects_2d() -> None:
+    with pytest.raises(ValueError, match="1-D"):
+        RecoveryTemperatureSeeds(T_l=np.ones((2, 3)))
+
+
+def test_recovery_temperature_seeds_rejects_inf() -> None:
+    with pytest.raises(ValueError, match="inf"):
+        RecoveryTemperatureSeeds(T_g=np.array([300.0, float("inf")]))
+
+
+def test_recovery_temperature_seeds_allows_nan() -> None:
+    seeds = RecoveryTemperatureSeeds(T_l=np.array([300.0, float("nan"), 350.0]))
+    assert seeds.T_l is not None
+    assert seeds.T_l.shape == (3,)
+
+
+def test_recovery_temperature_seeds_array_is_readonly() -> None:
+    arr = np.array([300.0, 350.0])
+    seeds = RecoveryTemperatureSeeds(T_l=arr)
+    assert seeds.T_l is not None
+    assert not seeds.T_l.flags.writeable

@@ -1338,6 +1338,7 @@ class RecoveryTemperatureSeeds:
                         f"RecoveryTemperatureSeeds.{name} must not contain ±inf; "
                         f"use NaN to mark absent seeds"
                     )
+                a.setflags(write=False)
                 object.__setattr__(self, name, a)
 
 
